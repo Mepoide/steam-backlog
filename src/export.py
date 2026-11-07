@@ -102,11 +102,25 @@ def shared_games(token, steamid):
     return out
 
 
+def setting(name, prompt, secret=True, required=True):
+    """Lee la variable del entorno; solo pregunta por consola si hay terminal."""
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    if sys.stdin.isatty():
+        return (getpass.getpass(prompt) if secret else input(prompt)).strip()
+    if required:
+        sys.exit(f"Falta {name} en .env")
+    return ""
+
+
 def main():
-    key = os.environ.get("STEAM_API_KEY") or getpass.getpass("API key (no se ve al escribir): ").strip()
-    steamid = os.environ.get("STEAM_ID") or input("SteamID64: ").strip()
-    token = os.environ.get("STEAM_WEBAPI_TOKEN") or getpass.getpass(
-        "webapi_token para biblioteca compartida (Enter para omitir): ").strip()
+    key = setting("STEAM_API_KEY", "API key (no se ve al escribir): ")
+    steamid = setting("STEAM_ID", "SteamID64: ", secret=False)
+    token = setting("STEAM_WEBAPI_TOKEN",
+                    "webapi_token para biblioteca compartida (Enter para omitir): ", required=False)
+    if not token:
+        print("  ⚠ Sin STEAM_WEBAPI_TOKEN: omito la biblioteca compartida.")
 
     print("→ Juegos propios…")
     lib = owned_games(key, steamid)

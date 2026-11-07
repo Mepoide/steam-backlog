@@ -1,0 +1,5 @@
+python-dotenv
+howlongtobeatpy>=1.0
+anthropic
+python-telegram-bot>=21.0
+pytest
