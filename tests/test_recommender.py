@@ -107,3 +107,11 @@ def test_top_tags_by_frequency():
     games = {"1": make_game(tags={"A": 1, "B": 1}), "2": make_game(tags={"A": 1, "B": 1}),
              "3": make_game(tags={"A": 1, "C": 1})}
     assert top_tags(games, n=2) == ["A", "B"]
+
+
+def test_minor_tags_do_not_match():
+    from recommender import matches
+    shooter = make_game(tags={"Disparos": 1373, "Estrategia": 166})
+    assert not matches(shooter, "estrategia")
+    assert matches(make_game(tags={"Disparos": 1000, "Estrategia": 479}), "estrategia")
+    assert matches(make_game(tags={"Disparos": 1000}, genres=["Estrategia"]), "estrategia")

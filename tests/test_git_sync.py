@@ -50,3 +50,32 @@ def test_only_given_paths_are_committed(tmp_path):
     (work / "otro.txt").write_text("no")
     commit_and_push(["backlog.csv"], "solo backlog", repo=work)
     assert git(work, "show", "--name-only", "--format=", "HEAD").split() == ["backlog.csv"]
+
+
+def other_clone_pushes(tmp_path, remote, filename, content, name="other"):
+    other = tmp_path / name
+    git(tmp_path, "clone", "-q", str(remote), str(other))
+    git(other, "config", "user.name", "Otro")
+    git(other, "config", "user.email", "otro@example.com")
+    (other / filename).write_text(content)
+    git(other, "add", filename)
+    git(other, "commit", "-q", "-m", f"cambio remoto en {filename}")
+    git(other, "push", "-q")
+
+
+def test_rebases_onto_newer_remote_before_push(tmp_path):
+    remote, work = setup_repo(tmp_path)
+    other_clone_pushes(tmp_path, remote, "README.md", "hola")
+    (work / "backlog.csv").write_text("appid\n1\n2\n")
+    assert commit_and_push(["backlog.csv"], "backlog: tras remoto", repo=work) is True
+    log = git(remote, "log", "--format=%s", "main").split("\n")
+    assert log[:2] == ["backlog: tras remoto", "cambio remoto en README.md"]
+
+
+def test_conflict_aborts_rebase_and_returns_false(tmp_path):
+    remote, work = setup_repo(tmp_path)
+    other_clone_pushes(tmp_path, remote, "backlog.csv", "appid\nremoto\n")
+    (work / "backlog.csv").write_text("appid\nlocal\n")
+    assert commit_and_push(["backlog.csv"], "backlog: conflicto", repo=work) is False
+    assert not (work / ".git" / "rebase-merge").exists() and not (work / ".git" / "rebase-apply").exists()
+    assert git(work, "log", "-1", "--format=%s").strip() == "backlog: conflicto"

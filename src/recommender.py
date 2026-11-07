@@ -43,9 +43,14 @@ def fold(s: str) -> str:
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
 
+MIN_TAG_SHARE = 0.25  # un tag cuenta si pesa al menos esto respecto al tag principal del juego
+
+
 def matches(entry: dict, term: str) -> bool:
     t = fold(term)
-    labels = list((entry.get("tags") or {}).keys()) + list(entry.get("genres") or [])
+    tags = entry.get("tags") or {}
+    peak = max(tags.values(), default=0) or 1
+    labels = [k for k, v in tags.items() if v >= MIN_TAG_SHARE * peak] + list(entry.get("genres") or [])
     return any(t in fold(label) for label in labels)
 
 

@@ -32,6 +32,11 @@ def commit_and_push(paths: list[str], message: str, repo: Path = ROOT) -> bool:
         except subprocess.CalledProcessError as e:
             log.error("git commit falló: %s", e.stderr.strip())
             return False
+        pull = _git(repo, "pull", "-q", "--rebase", "--autostash", check=False)
+        if pull.returncode != 0:
+            _git(repo, "rebase", "--abort", check=False)
+            log.error("git pull --rebase falló (el commit queda en local): %s", pull.stderr.strip())
+            return False
         push = _git(repo, "push", "-q", check=False)
         if push.returncode != 0:
             log.error("git push falló (el commit queda en local): %s", push.stderr.strip())
