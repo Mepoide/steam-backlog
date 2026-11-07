@@ -1,0 +1,8 @@
+.env
+data/
+*.json
+*.csv
+!backlog.csv
+__pycache__/
+*.pyc
+.venv/
