@@ -89,6 +89,8 @@ El bot usa long polling: no hace falta abrir puertos ni exponer nada.
 git clone https://github.com/Mepoide/steam-backlog.git && cd steam-backlog
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp .env.example .env    # y rellénalo
+git config --global user.name "Tu nombre"         # sin identidad git no hay commits
+git config --global user.email "tu@correo.example"
 gh auth login           # credenciales para que el job pueda hacer git push
 scripts/daily.sh        # primera ejecución a mano (~15 min)
 ops/install_launchd.sh  # job diario a las 06:00 + bot siempre activo

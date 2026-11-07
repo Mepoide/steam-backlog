@@ -183,3 +183,11 @@ def test_free_text_zero_results_falls_back():
     reply = free_text(store(), "x", llm=fake_llm(Filters(include_tags=["carreras"])))
     assert reply.text.startswith(
         "No he encontrado nada exacto; esto es lo que más te encaja en general:\n\n1. Hades")
+
+
+def test_free_text_logs_llm_errors(caplog):
+    with caplog.at_level("WARNING"):
+        free_text(store(), "x", llm=fake_llm(parse_error=True))
+        free_text(store(), "x", llm=fake_llm(intro_error=True))
+    msgs = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert len(msgs) == 2 and all("caído" in m for m in msgs)

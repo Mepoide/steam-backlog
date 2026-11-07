@@ -77,6 +77,14 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _send(update, lambda: commands.free_text(commands.load_store(), text))
 
 
+def unknown_reply() -> commands.Reply:
+    return commands.Reply("No te he entendido.\n\n" + commands.cmd_ayuda().text)
+
+
+async def on_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _send(update, unknown_reply)
+
+
 async def on_unauthorized(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
     log.warning("Chat no autorizado: %s", chat.id if chat else "?")
@@ -109,6 +117,7 @@ def build_application(token: str, allowed_chat_id: int) -> Application:
                       (["marcar"], on_marcar)):
         app.add_handler(CommandHandler(names, fn, filters=allowed))
     app.add_handler(MessageHandler(allowed & filters.TEXT & ~filters.COMMAND, on_text))
+    app.add_handler(MessageHandler(allowed & (filters.COMMAND | ~filters.TEXT), on_unknown))
     app.add_handler(CallbackQueryHandler(_on_callback(allowed_chat_id)))
     app.add_handler(MessageHandler(~allowed, on_unauthorized), group=1)
     return app

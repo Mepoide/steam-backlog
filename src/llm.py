@@ -45,8 +45,12 @@ class LLMError(Exception):
     pass
 
 
-def _client(client):
-    return client if client is not None else anthropic.Anthropic()
+def _create(client, **kwargs):
+    try:
+        c = client if client is not None else anthropic.Anthropic()
+        return c.messages.create(**kwargs)
+    except (anthropic.AnthropicError, TypeError) as e:  # sin credenciales el SDK lanza TypeError
+        raise LLMError(f"{type(e).__name__}: {e}") from e
 
 
 def _known(tags: list[str], known: list[str]) -> list[str]:
@@ -55,15 +59,12 @@ def _known(tags: list[str], known: list[str]) -> list[str]:
 
 
 def parse_request(text: str, known_tags: list[str], client=None) -> Filters:
-    try:
-        resp = _client(client).messages.create(
-            model=MODEL, max_tokens=1000,
-            system=PARSE_SYSTEM.format(tags=", ".join(known_tags)),
-            tools=[FILTERS_TOOL], tool_choice={"type": "tool", "name": "set_filters"},
-            messages=[{"role": "user", "content": text}],
-        )
-    except anthropic.AnthropicError as e:
-        raise LLMError(f"{type(e).__name__}: {e}") from e
+    resp = _create(
+        client, model=MODEL, max_tokens=1000,
+        system=PARSE_SYSTEM.format(tags=", ".join(known_tags)),
+        tools=[FILTERS_TOOL], tool_choice={"type": "tool", "name": "set_filters"},
+        messages=[{"role": "user", "content": text}],
+    )
     call = next((b for b in resp.content if b.type == "tool_use" and b.name == "set_filters"), None)
     if call is None:
         raise LLMError(f"sin llamada a set_filters (stop_reason={resp.stop_reason})")
@@ -81,14 +82,11 @@ def parse_request(text: str, known_tags: list[str], client=None) -> Filters:
 
 def write_intro(text: str, recs: list[Recommendation], client=None) -> str:
     listing = "\n".join(f"- {r.name}: {r.reason}" for r in recs)
-    try:
-        resp = _client(client).messages.create(
-            model=MODEL, max_tokens=1000, output_config={"effort": "low"},
-            system=INTRO_SYSTEM,
-            messages=[{"role": "user", "content": f"Petición: {text}\n\nJuegos:\n{listing}"}],
-        )
-    except anthropic.AnthropicError as e:
-        raise LLMError(f"{type(e).__name__}: {e}") from e
+    resp = _create(
+        client, model=MODEL, max_tokens=1000, output_config={"effort": "low"},
+        system=INTRO_SYSTEM,
+        messages=[{"role": "user", "content": f"Petición: {text}\n\nJuegos:\n{listing}"}],
+    )
     out = "".join(b.text for b in resp.content if b.type == "text").strip()
     if not out:
         raise LLMError(f"intro vacía (stop_reason={resp.stop_reason})")

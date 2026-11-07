@@ -79,3 +79,13 @@ def test_write_intro_returns_text():
 def test_write_intro_empty_raises():
     with pytest.raises(LLMError):
         write_intro("x", [rec()], client=FakeClient([SimpleNamespace(type="text", text="  ")]))
+
+
+def test_missing_api_key_raises_llmerror(monkeypatch):
+    for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_PROFILE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("HOME", "/nonexistent")
+    with pytest.raises(LLMError):
+        parse_request("x", KNOWN)
+    with pytest.raises(LLMError):
+        write_intro("x", [rec()])

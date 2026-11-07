@@ -1,6 +1,7 @@
 """Lógica de los comandos del bot, sin Telegram: cada comando devuelve un Reply."""
 import difflib
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 
@@ -10,6 +11,7 @@ from config import BACKLOG_CSV, GAMES_JSON, SCORES_JSON
 from library import ESTADOS, read_backlog, set_estado
 from recommender import Filters, Recommendation, fold, netflix_rows, recommend, top_tags
 
+log = logging.getLogger(__name__)
 ESTADOS_TXT = "pendiente, jugando, terminado, abandonado, descartado"
 NO_DATA = "Aún no hay recomendaciones: ejecuta enrich.py y taste.py (o espera al job diario)."
 RECOMIENDA_LIMIT = 5
@@ -157,7 +159,8 @@ def free_text(store: Store, text: str, llm=llm_module) -> Reply:
     args = (store.games, store.scores, store.backlog)
     try:
         filters = llm.parse_request(text, top_tags(store.games))
-    except llm.LLMError:
+    except llm.LLMError as e:
+        log.warning("LLM (parse_request) falló: %s", e)
         recs = recommend(Filters(), *args)
         if not recs:
             return Reply(NO_DATA)
@@ -172,6 +175,7 @@ def free_text(store: Store, text: str, llm=llm_module) -> Reply:
                      + render(None, recs))
     try:
         intro = llm.write_intro(text, recs)
-    except llm.LLMError:
+    except llm.LLMError as e:
+        log.warning("LLM (write_intro) falló: %s", e)
         return Reply(render(None, recs))
     return Reply(f"{intro}\n\n{render(None, recs)}")
