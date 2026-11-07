@@ -1,0 +1,70 @@
+{
+ "1145360": {
+  "success": true,
+  "data": {
+   "type": "game",
+   "name": "Hades",
+   "steam_appid": 1145360,
+   "genres": [
+    {
+     "id": "1",
+     "description": "Acción"
+    },
+    {
+     "id": "23",
+     "description": "Indie"
+    },
+    {
+     "id": "3",
+     "description": "Rol"
+    }
+   ],
+   "categories": [
+    {
+     "id": 2,
+     "description": "Un jugador"
+    },
+    {
+     "id": 22,
+     "description": "Logros de Steam"
+    },
+    {
+     "id": 28,
+     "description": "Compat. total con mando"
+    },
+    {
+     "id": 29,
+     "description": "Cromos de Steam"
+    },
+    {
+     "id": 13,
+     "description": "Subtítulos disponibles"
+    },
+    {
+     "id": 23,
+     "description": "Steam Cloud"
+    },
+    {
+     "id": 41,
+     "description": "Remote Play en móvil"
+    },
+    {
+     "id": 42,
+     "description": "Remote Play en tableta"
+    },
+    {
+     "id": 43,
+     "description": "Remote Play en TV"
+    },
+    {
+     "id": 62,
+     "description": "Préstamo familiar"
+    }
+   ],
+   "metacritic": {
+    "score": 93,
+    "url": "https://www.metacritic.com/game/pc/hades?ftag=MCD-06-10aaa1f"
+   }
+  }
+ }
+}

@@ -1,0 +1,86 @@
+{
+ "response": {
+  "tags": [
+   {
+    "tagid": 19,
+    "name": "Acción"
+   },
+   {
+    "tagid": 122,
+    "name": "Rol"
+   },
+   {
+    "tagid": 492,
+    "name": "Indie"
+   },
+   {
+    "tagid": 1646,
+    "name": "Hack and slash"
+   },
+   {
+    "tagid": 1716,
+    "name": "Roguelike"
+   },
+   {
+    "tagid": 1720,
+    "name": "Exploración de mazmorras"
+   },
+   {
+    "tagid": 1742,
+    "name": "Buena trama"
+   },
+   {
+    "tagid": 1756,
+    "name": "Gran banda sonora"
+   },
+   {
+    "tagid": 1759,
+    "name": "Muerte permanente"
+   },
+   {
+    "tagid": 3959,
+    "name": "Roguelite"
+   },
+   {
+    "tagid": 4026,
+    "name": "Implacables"
+   },
+   {
+    "tagid": 4166,
+    "name": "Ambientales"
+   },
+   {
+    "tagid": 4182,
+    "name": "Un jugador"
+   },
+   {
+    "tagid": 4231,
+    "name": "Rol de acción"
+   },
+   {
+    "tagid": 4711,
+    "name": "Valor continuo"
+   },
+   {
+    "tagid": 5851,
+    "name": "Isométricos"
+   },
+   {
+    "tagid": 6815,
+    "name": "Dibujados a mano"
+   },
+   {
+    "tagid": 16094,
+    "name": "Mitología"
+   },
+   {
+    "tagid": 42804,
+    "name": "Roguelike de acción"
+   },
+   {
+    "tagid": 44868,
+    "name": "LGBTQ+"
+   }
+  ]
+ }
+}

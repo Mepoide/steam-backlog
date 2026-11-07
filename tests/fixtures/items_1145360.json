@@ -1,0 +1,133 @@
+{
+ "response": {
+  "store_items": [
+   {
+    "item_type": 0,
+    "id": 1145360,
+    "success": 1,
+    "visible": true,
+    "name": "Hades",
+    "appid": 1145360,
+    "type": 0,
+    "tagids": [
+     42804,
+     3959,
+     1646,
+     492,
+     16094,
+     19,
+     1716,
+     4182,
+     1756,
+     1742,
+     1720,
+     122,
+     4711,
+     5851,
+     4026,
+     6815,
+     4231,
+     4166,
+     44868,
+     1759
+    ],
+    "reviews": {
+     "summary_filtered": {
+      "review_count": 287782,
+      "percent_positive": 97,
+      "review_score": 9,
+      "review_score_label": "Extremadamente positivas"
+     },
+     "summary_language_specific": {
+      "review_count": 15403,
+      "percent_positive": 99,
+      "review_score": 9,
+      "review_score_label": "Extremadamente positivas"
+     }
+    },
+    "tags": [
+     {
+      "tagid": 42804,
+      "weight": 1051
+     },
+     {
+      "tagid": 3959,
+      "weight": 765
+     },
+     {
+      "tagid": 1646,
+      "weight": 750
+     },
+     {
+      "tagid": 492,
+      "weight": 733
+     },
+     {
+      "tagid": 16094,
+      "weight": 732
+     },
+     {
+      "tagid": 19,
+      "weight": 636
+     },
+     {
+      "tagid": 1716,
+      "weight": 620
+     },
+     {
+      "tagid": 4182,
+      "weight": 578
+     },
+     {
+      "tagid": 1756,
+      "weight": 556
+     },
+     {
+      "tagid": 1742,
+      "weight": 545
+     },
+     {
+      "tagid": 1720,
+      "weight": 508
+     },
+     {
+      "tagid": 122,
+      "weight": 500
+     },
+     {
+      "tagid": 4711,
+      "weight": 462
+     },
+     {
+      "tagid": 5851,
+      "weight": 362
+     },
+     {
+      "tagid": 4026,
+      "weight": 328
+     },
+     {
+      "tagid": 6815,
+      "weight": 240
+     },
+     {
+      "tagid": 4231,
+      "weight": 234
+     },
+     {
+      "tagid": 4166,
+      "weight": 231
+     },
+     {
+      "tagid": 44868,
+      "weight": 81
+     },
+     {
+      "tagid": 1759,
+      "weight": 80
+     }
+    ]
+   }
+  ]
+ }
+}
