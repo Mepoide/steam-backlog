@@ -115,3 +115,43 @@ def test_minor_tags_do_not_match():
     assert not matches(shooter, "estrategia")
     assert matches(make_game(tags={"Disparos": 1000, "Estrategia": 479}), "estrategia")
     assert matches(make_game(tags={"Disparos": 1000}, genres=["Estrategia"]), "estrategia")
+
+
+def test_terms_match_at_word_start_only():
+    from recommender import matches
+    assert not matches(make_game(tags={"Control": 10}), "rol")
+    assert matches(make_game(tags={"Rol de acción": 10}), "rol")
+    assert matches(make_game(tags={"Supervivencia / Terror": 10}), "terror")
+    assert matches(make_game(tags={"Roguelike de acción": 10}), "rogue")
+
+
+def test_strong_match_beats_higher_score_with_weak_match():
+    # «algo relajante tipo granja»: el juego de granja debe ganar al LEGO que solo es algo «Casual».
+    games = {"lego": make_game("LEGO", tags={"Acción": 100, "Casuales": 30}),
+             "granja": make_game("Granja", tags={"Agricultura": 100, "Relajantes": 90, "Casuales": 60})}
+    scores = {"lego": sc(0.8), "granja": sc(0.5)}
+    f = Filters(include_tags=["Agricultura", "Relajantes", "Casuales"])
+    assert ids(recommend(f, games, scores, pending("lego", "granja"))) == ["granja", "lego"]
+
+
+def test_without_include_tags_order_is_pure_score():
+    games = {"a": make_game(tags={"X": 1}), "b": make_game(tags={"Y": 1})}
+    assert ids(recommend(Filters(), games, {"a": sc(0.4), "b": sc(0.6)}, pending("a", "b"))) == ["b", "a"]
+
+
+def test_top_tags_default_is_all():
+    games = {str(i): make_game(tags={f"T{i}": 1}) for i in range(120)}
+    assert len(top_tags(games)) == 120
+
+
+def test_max_hours_skips_multiplayer_only_games():
+    # HLTB da «2,5 h» a Half-Life 2: Deathmatch, pero un juego solo multijugador no «se termina».
+    mp = make_game("HL2DM", hltb_main=2.5)
+    mp["categories"] = ["Multijugador", "JcJ"]
+    sp = make_game("Corto", hltb_main=4)
+    sp["categories"] = ["Un jugador", "Multijugador"]
+    unknown = make_game("Sin categorías", hltb_main=3)  # sin datos de la tienda: se deja pasar
+    games = {"mp": mp, "sp": sp, "u": unknown}
+    scores = {"mp": sc(0.9), "sp": sc(0.5), "u": sc(0.4)}
+    assert ids(recommend(Filters(max_hours=5), games, scores, pending("mp", "sp", "u"))) == ["sp", "u"]
+    assert "mp" in ids(recommend(Filters(), games, scores, pending("mp", "sp", "u")))
