@@ -24,13 +24,37 @@ PRIOR_WEIGHT = 50
 W_SIM, W_QUALITY = 0.7, 0.3
 
 
-def tag_vector(entry: dict, top_n: int = TOP_TAGS) -> dict[str, float]:
+def _raw_vector(entry: dict, top_n: int = TOP_TAGS) -> dict[str, float]:
     tags = entry.get("tags") or {}
     if not tags:
         return {g: 1.0 for g in entry.get("genres") or []}
     top = sorted(tags.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
     peak = top[0][1] or 1
     return {t: v / peak for t, v in top}
+
+
+def idf_weights(games: dict) -> dict[str, float]:
+    """IDF suavizado: ln((1+N)/(1+df)) + 1.
+
+    Un tag que tiene media biblioteca («Acción», «Multijugador») apenas distingue
+    gustos; uno raro («Roguelike», «Agricultura») sí. El +1 deja el mínimo en 1, así
+    que los tags comunes pesan menos pero nunca desaparecen.
+    """
+    vectors = [_raw_vector(e) for e in games.values()]
+    vectors = [v for v in vectors if v]
+    df: dict[str, int] = {}
+    for v in vectors:
+        for t in v:
+            df[t] = df.get(t, 0) + 1
+    n = len(vectors)
+    return {t: math.log((1 + n) / (1 + d)) + 1 for t, d in df.items()}
+
+
+def tag_vector(entry: dict, top_n: int = TOP_TAGS, idf: dict[str, float] | None = None) -> dict[str, float]:
+    vec = _raw_vector(entry, top_n)
+    if idf is None:
+        return vec
+    return {t: w * idf.get(t, 1.0) for t, w in vec.items()}
 
 
 def cosine(a: dict, b: dict) -> float:
@@ -45,13 +69,14 @@ def _weight(p: Playtime, today: date) -> float:
     return math.log1p(p.hours) * (RECENT_BOOST if recent else 1.0)
 
 
-def build_profile(games: dict, playtime: dict[str, Playtime], today: date) -> dict[str, float]:
+def build_profile(games: dict, playtime: dict[str, Playtime], today: date,
+                  idf: dict[str, float] | None = None) -> dict[str, float]:
     profile: dict[str, float] = {}
     for appid, p in playtime.items():
         if p.hours <= 0 or appid not in games:
             continue
         w = _weight(p, today)
-        for tag, tw in tag_vector(games[appid]).items():
+        for tag, tw in tag_vector(games[appid], idf=idf).items():
             profile[tag] = profile.get(tag, 0.0) + w * tw
     norm = math.sqrt(sum(v * v for v in profile.values()))
     return {k: v / norm for k, v in profile.items()} if norm else {}
@@ -65,8 +90,8 @@ def quality(entry: dict) -> float:
 
 
 def score_pending(games: dict, playtime: dict[str, Playtime], backlog: list[dict],
-                  profile: dict[str, float]) -> dict[str, dict]:
-    played = [(a, tag_vector(games[a]), math.log1p(p.hours))
+                  profile: dict[str, float], idf: dict[str, float] | None = None) -> dict[str, dict]:
+    played = [(a, tag_vector(games[a], idf=idf), math.log1p(p.hours))
               for a, p in playtime.items() if p.hours > 0 and a in games]
     scores = {}
     for row in backlog:
@@ -74,7 +99,7 @@ def score_pending(games: dict, playtime: dict[str, Playtime], backlog: list[dict
         if row["estado"] != "pendiente":
             continue
         entry = games.get(appid, {})
-        vec = tag_vector(entry)
+        vec = tag_vector(entry, idf=idf)
         sim, q = cosine(profile, vec), quality(entry)
 
         anchor, best = None, 0.0
@@ -86,13 +111,14 @@ def score_pending(games: dict, playtime: dict[str, Playtime], backlog: list[dict
                 anchor, best = a, s
         shared = []
         if anchor:
-            avec = tag_vector(games[anchor])
+            avec = tag_vector(games[anchor], idf=idf)
             common = sorted((t for t in vec if t in avec), key=lambda t: vec[t] * avec[t], reverse=True)
             shared = common[:2]
         scores[appid] = {
             "score": W_SIM * sim + W_QUALITY * q, "sim": sim, "quality": q,
             "anchor_appid": anchor, "anchor_name": games[anchor]["name"] if anchor else None,
             "shared_tags": shared,
+            "played_hours": playtime[appid].hours if appid in playtime else 0.0,
         }
     return scores
 
@@ -104,8 +130,9 @@ def main() -> None:
     games = json.loads(GAMES_JSON.read_text(encoding="utf-8"))
     playtime = load_playtime()
     backlog = read_backlog()
-    profile = build_profile(games, playtime, date.today())
-    scores = score_pending(games, playtime, backlog, profile)
+    idf = idf_weights(games)
+    profile = build_profile(games, playtime, date.today(), idf=idf)
+    scores = score_pending(games, playtime, backlog, profile, idf=idf)
     atomic_write_json(PROFILE_JSON, dict(sorted(profile.items(), key=lambda kv: -kv[1])))
     atomic_write_json(SCORES_JSON, scores)
     print(f"✓ perfil con {len(profile)} tags, {len(scores)} pendientes puntuados")

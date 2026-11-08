@@ -3,8 +3,11 @@ from types import SimpleNamespace
 import pytest
 
 import llm as real_llm
-from commands import (Store, cmd_ayuda, cmd_buscar, cmd_marcar, cmd_recomienda, cmd_top,
-                      confirm_mark, find_games, free_text, parse_recomienda_args, render)
+from datetime import date
+
+from commands import (NO_DATA, Store, cmd_ayuda, cmd_buscar, cmd_coste, cmd_juego, cmd_marcar,
+                      cmd_recientes, cmd_recomienda, cmd_top, confirm_mark, find_games, free_text,
+                      parse_recomienda_args, render)
 from conftest import make_backlog, make_game
 from library import read_backlog, write_backlog
 from recommender import Filters, Recommendation
@@ -26,7 +29,18 @@ def store():
     backlog = make_backlog(("5", "Hades", "pendiente"), ("6", "Hades II", "pendiente"),
                            ("7", "Stardew Valley", "pendiente"), ("8", "Celeste", "pendiente"),
                            ("9", "Portal 2", "terminado"))
-    return Store(games=games, scores=scores, backlog=backlog)
+    library = {
+        "5": lib("Hades", "compartido", 0.0, None, date(2021, 7, 1)),
+        "6": lib("Hades II", "propio", 71.8, date(2026, 11, 8), date(2026, 7, 22)),
+        "7": lib("Stardew Valley", "propio", 1.0, date(2024, 1, 2), date(2023, 12, 25)),
+        "8": lib("Celeste", "compartido", 0.0, None, None),
+        "9": lib("Portal 2", "propio", 12.0, date(2020, 5, 1), date(2019, 3, 3)),
+    }
+    return Store(games=games, scores=scores, backlog=backlog, library=library)
+
+
+def lib(name, source, hours, last, acquired):
+    return {"name": name, "source": source, "hours": hours, "last_played": last, "acquired": acquired}
 
 
 def test_render_format():
@@ -43,7 +57,7 @@ def test_render_format():
 
 def test_ayuda_lists_commands():
     text = cmd_ayuda().text
-    for c in ("/top", "/recomienda", "/buscar", "/marcar"):
+    for c in ("/top", "/recomienda", "/buscar", "/juego", "/recientes", "/marcar", "/coste"):
         assert c in text
 
 
@@ -147,11 +161,14 @@ def test_confirm_mark_missing_game(backlog_file):
     assert reply.text == "Ese juego ya no está en el backlog."
 
 
-def fake_llm(filters=None, intro="Aquí tienes.", parse_error=False, intro_error=False):
-    def parse_request(text, known_tags):
+def fake_llm(filters=None, intro="Aquí tienes.", parse_error=False, intro_error=False, request=None,
+             seen=None):
+    def parse_request(text, known_tags, previous=None):
+        if seen is not None:
+            seen.append(previous)
         if parse_error:
             raise real_llm.LLMError("caído")
-        return filters or Filters()
+        return request or real_llm.Request(filters=filters or Filters())
 
     def write_intro(text, recs):
         if intro_error:
@@ -191,3 +208,91 @@ def test_free_text_logs_llm_errors(caplog):
         free_text(store(), "x", llm=fake_llm(intro_error=True))
     msgs = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
     assert len(msgs) == 2 and all("caído" in m for m in msgs)
+
+
+def test_free_text_budget_exhausted_says_so():
+    def parse_request(text, known_tags, previous=None):
+        raise real_llm.BudgetExceeded("presupuesto mensual de IA agotado (1.00 de 1.00 $)")
+    fake = SimpleNamespace(parse_request=parse_request, write_intro=None, LLMError=real_llm.LLMError)
+    reply = free_text(store(), "x", llm=fake)
+    assert reply.text.startswith("Este mes ya se ha gastado el presupuesto de IA (/coste); "
+                                 "aquí van tus recomendaciones de siempre:\n\n1. Hades")
+
+
+def test_free_text_without_data_does_not_call_llm():
+    def boom(*a):
+        raise AssertionError("no debería llamar al LLM")
+    fake = SimpleNamespace(parse_request=boom, write_intro=boom, LLMError=real_llm.LLMError)
+    assert free_text(Store(games={}, scores={}, backlog=[]), "x", llm=fake).text == NO_DATA
+
+
+def test_free_text_logs_request_and_result(caplog):
+    with caplog.at_level("INFO", logger="commands"):
+        free_text(store(), "algo corto", llm=fake_llm(Filters(max_hours=10)))
+    msg = " ".join(r.getMessage() for r in caplog.records)
+    assert "algo corto" in msg and "max_hours=10" in msg and "Celeste" in msg
+
+
+def test_coste_reports_month_spend():
+    import usage
+    usage.record(usage.Usage(model=real_llm.MODEL, kind="parse", input_tokens=30_000, output_tokens=1_000))
+    text = cmd_coste(budget=1.0).text
+    assert text.startswith("IA este mes: 1 llamadas · 30.0K tokens de entrada · 1.0K de salida")
+    assert "0.0035 $ de 1.00 $ (0 %)" in text
+
+
+def test_coste_without_budget_and_unpriced():
+    import usage
+    usage.record(usage.Usage(model="claude-otro", kind="parse", input_tokens=10))
+    text = cmd_coste(budget=0).text
+    assert "sin tope" in text and "1 llamadas sin precio conocido" in text
+
+
+
+def test_juego_shows_playtime_dates_and_store_data():
+    text = cmd_juego(store(), "hades").text
+    first, second = text.split("\n\n")
+    assert first.startswith("Hades — pendiente\nSin jugar · biblioteca familiar, disponible desde 2021-07-01")
+    assert "Duración: 24 h historia principal (HowLongToBeat)" in first
+    assert "Reseñas: 10 % 👍 de 1000" in first  # fixture: 97 de 1000 and "Tags: Roguelike" in first
+    assert first.endswith("https://store.steampowered.com/app/5")
+    assert second.startswith("Hades II — pendiente\n71.8 h jugadas (última vez 2026-11-08) · "
+                             "comprado el 2026-07-22")
+
+
+def test_juego_errors():
+    assert cmd_juego(store(), "").text.startswith("Uso: /juego")
+    assert cmd_juego(store(), "zzzz").text == "No encuentro «zzzz» en tu biblioteca."
+
+
+def test_recientes_sorted_by_acquired():
+    text = cmd_recientes(store(), 3).text
+    assert text.splitlines() == [
+        "Últimos juegos añadidos a tu biblioteca:",
+        "1. Hades II — 2026-07-22 · propio · 71.8 h · pendiente",
+        "2. Stardew Valley — 2023-12-25 · propio · 1.0 h · pendiente",
+        "3. Hades — 2021-07-01 · familiar · sin jugar · pendiente",
+    ]
+    assert cmd_recientes(Store(games={}, scores={}, backlog=[]), 5).text.startswith("No tengo las fechas")
+
+
+def test_free_text_routes_game_and_recent_without_intro():
+    r = free_text(store(), "cuánto he jugado al Hades",
+                  llm=fake_llm(request=real_llm.Request(kind="game", game="Hades II"), intro_error=True))
+    assert r.text.startswith("Hades II — pendiente\n71.8 h jugadas")
+    r = free_text(store(), "qué he comprado hace poco",
+                  llm=fake_llm(request=real_llm.Request(kind="recent", limit=1)))
+    assert r.text.startswith("Últimos juegos añadidos a tu biblioteca:\n1. Hades II")
+
+
+def test_free_text_passes_previous_message():
+    seen = []
+    free_text(store(), "¿y de rol?", llm=fake_llm(seen=seen), previous="algo corto")
+    assert seen == ["algo corto"]
+
+
+
+def test_juego_suggests_marcar_for_started_pending_games():
+    text = cmd_juego(store(), "hades ii").text
+    assert "Sigue en «pendiente» y no te lo recomiendo: /marcar Hades II jugando" in text
+    assert "/marcar" not in cmd_juego(store(), "celeste").text

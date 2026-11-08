@@ -6,7 +6,8 @@ from bot import build_application
 def test_build_application_registers_commands():
     app = build_application("123:ABC", 42)
     cmds = {c for h in app.handlers[0] if isinstance(h, CommandHandler) for c in h.commands}
-    assert cmds == {"start", "ayuda", "top", "recomienda", "buscar", "marcar"}
+    assert cmds == {"start", "ayuda", "top", "recomienda", "buscar", "juego", "recientes",
+                    "marcar", "coste"}
 
 
 def test_build_application_has_text_callback_and_unauthorized_handlers():
@@ -64,3 +65,32 @@ def test_unknown_reply_text():
     from bot import unknown_reply
     assert unknown_reply().text.startswith("No te he entendido.")
     assert "/recomienda" in unknown_reply().text
+
+
+def test_menu_lists_every_public_command():
+    from bot import MENU
+    app = build_application("123:ABC", 42)
+    cmds = {c for h in app.handlers[0] if isinstance(h, CommandHandler) for c in h.commands}
+    assert {name for name, _ in MENU} == cmds - {"start"}
+
+
+def test_network_errors_are_one_line_warnings(caplog):
+    import asyncio
+    from types import SimpleNamespace
+    from telegram.error import NetworkError
+    from bot import on_error
+    app = build_application("123:ABC", 42)
+    assert app.error_handlers
+    with caplog.at_level("WARNING", logger="bot"):
+        asyncio.run(on_error(None, SimpleNamespace(error=NetworkError("Bad Gateway"))))
+    [r] = caplog.records
+    assert r.levelname == "WARNING" and "Bad Gateway" in r.getMessage() and r.exc_info is None
+
+
+def test_other_errors_keep_traceback(caplog):
+    import asyncio
+    from types import SimpleNamespace
+    from bot import on_error
+    with caplog.at_level("ERROR", logger="bot"):
+        asyncio.run(on_error(None, SimpleNamespace(error=ValueError("x"))))
+    assert caplog.records[0].exc_info is not None

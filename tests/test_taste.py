@@ -97,3 +97,41 @@ def test_pending_game_is_not_its_own_anchor():
     playtime["p1"] = pt(500)  # empezado pero sigue pendiente
     profile = build_profile(games, playtime, TODAY)
     assert score_pending(games, playtime, backlog, profile)["p1"]["anchor_appid"] == "x"
+
+
+def test_idf_downweights_ubiquitous_tags():
+    from taste import idf_weights
+    games = {str(i): make_game(tags={"Acción": 100, f"Raro{i}": 50}) for i in range(10)}
+    idf = idf_weights(games)
+    assert idf["Acción"] < idf["Raro0"]
+    assert idf["Acción"] == pytest.approx(1.0)  # está en todos: peso mínimo, nunca cero
+
+
+def test_idf_prefers_distinctive_shared_tags():
+    # Jugaste mucho a un roguelike de acción. Dos pendientes: uno solo comparte «Acción»
+    # (que tiene media biblioteca) con más peso; el otro comparte «Roguelike».
+    games = {"played": make_game("Dead Cells", tags={"Acción": 100, "Roguelike": 90})}
+    for i in range(8):
+        games[f"filler{i}"] = make_game(f"F{i}", tags={"Acción": 100, f"Otro{i}": 50})
+    games["shooter"] = make_game("Shooter", tags={"Acción": 100, "Disparos": 40})
+    games["rogue"] = make_game("Hades", tags={"Roguelike": 100, "Mitología": 80})
+    playtime = {"played": pt(80)}
+    backlog = make_backlog(("shooter", "Shooter", "pendiente"), ("rogue", "Hades", "pendiente"))
+    from taste import idf_weights
+    idf = idf_weights(games)
+    profile = build_profile(games, playtime, TODAY, idf=idf)
+    s = score_pending(games, playtime, backlog, profile, idf=idf)
+    assert s["rogue"]["sim"] > s["shooter"]["sim"]
+    assert s["rogue"]["shared_tags"] == ["Roguelike"]
+    # Sin IDF (comportamiento anterior) ganaba el shooter: lo que este cambio corrige.
+    plain = score_pending(games, playtime, backlog, build_profile(games, playtime, TODAY))
+    assert plain["shooter"]["sim"] > plain["rogue"]["sim"]
+
+
+def test_scores_include_played_hours():
+    s = score_pending(*scenario())
+    assert s["p1"]["played_hours"] == 0.0
+    games, playtime, backlog, _ = scenario()
+    playtime["p1"] = pt(3.5)
+    assert score_pending(games, playtime, backlog, build_profile(games, playtime, TODAY))["p1"][
+        "played_hours"] == 3.5

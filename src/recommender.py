@@ -2,6 +2,7 @@
 
 Módulo puro: no sabe nada de Telegram ni del LLM (lo reutilizará la web).
 """
+import re
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
@@ -25,6 +26,7 @@ class Recommendation:
     reason: str
     hours: float | None
     positive_pct: int | None
+    tags: list[str] = field(default_factory=list)  # principales, para que la intro no invente
 
     @property
     def url(self) -> str:
@@ -44,14 +46,36 @@ def fold(s: str) -> str:
 
 
 MIN_TAG_SHARE = 0.25  # un tag cuenta si pesa al menos esto respecto al tag principal del juego
+GENRE_SHARE = 0.5  # los géneros de la tienda no tienen peso: cuentan como un tag medio
+RELEVANCE_WEIGHT = 0.5  # con tags pedidos, el orden mezcla gusto (score) y cuánto encaja
+STARTED_HOURS = 2.0  # con estas horas jugadas ya no es una sugerencia nueva, aunque siga «pendiente»
+
+
+def tag_share(entry: dict, term: str) -> float:
+    """Cuánto pesa `term` en el juego (0-1, relativo a su tag principal).
+
+    El término casa al principio de palabra: «rogue» → «Roguelike de acción»,
+    «terror» → «Supervivencia / Terror», pero «rol» no casa con «Control».
+    """
+    pattern = re.compile(r"\b" + re.escape(fold(term.strip())))
+    tags = entry.get("tags") or {}
+    peak = max(tags.values(), default=0) or 1
+    best = max((v / peak for k, v in tags.items() if pattern.search(fold(k))), default=0.0)
+    if any(pattern.search(fold(g)) for g in entry.get("genres") or []):
+        best = max(best, GENRE_SHARE)
+    return best
 
 
 def matches(entry: dict, term: str) -> bool:
-    t = fold(term)
-    tags = entry.get("tags") or {}
-    peak = max(tags.values(), default=0) or 1
-    labels = [k for k, v in tags.items() if v >= MIN_TAG_SHARE * peak] + list(entry.get("genres") or [])
-    return any(t in fold(label) for label in labels)
+    return tag_share(entry, term) >= MIN_TAG_SHARE
+
+
+def relevance(entry: dict, terms: list[str]) -> float:
+    """Media de lo que pesa cada término pedido (0 si no llega al mínimo)."""
+    if not terms:
+        return 0.0
+    shares = [tag_share(entry, t) for t in terms]
+    return sum(s for s in shares if s >= MIN_TAG_SHARE) / len(terms)
 
 
 def _positive(entry: dict) -> float | None:
@@ -59,10 +83,20 @@ def _positive(entry: dict) -> float | None:
     return entry["reviews_positive"] / total if total else None
 
 
+SINGLE_PLAYER = "Un jugador"  # categoría de la tienda (l=spanish)
+
+
+def _multiplayer_only(entry: dict) -> bool:
+    cats = entry.get("categories") or []
+    return bool(cats) and SINGLE_PLAYER not in cats
+
+
 def _passes(f: Filters, entry: dict) -> bool:
     if f.max_hours is not None:
         hours = entry.get("hltb_main")
         if hours is None or hours > f.max_hours:
+            return False
+        if _multiplayer_only(entry):  # su «duración» en HLTB no significa nada
             return False
     if f.include_tags and not any(matches(entry, t) for t in f.include_tags):
         return False
@@ -92,7 +126,9 @@ def _to_rec(appid: str, entry: dict, score: dict, fallback_name: str) -> Recomme
     pct = round(pos * 100) if pos is not None else None
     return Recommendation(appid=appid, name=entry.get("name") or fallback_name,
                           score=score["score"], reason=_reason(score, pct),
-                          hours=entry.get("hltb_main"), positive_pct=pct)
+                          hours=entry.get("hltb_main"), positive_pct=pct,
+                          tags=[t for t, _ in sorted((entry.get("tags") or {}).items(),
+                                                     key=lambda kv: -kv[1])[:5]])
 
 
 def _select(f: Filters, games: dict, scores: dict, backlog: list[dict],
@@ -102,10 +138,20 @@ def _select(f: Filters, games: dict, scores: dict, backlog: list[dict],
         appid = row["appid"]
         if row["estado"] != "pendiente" or appid in exclude or appid not in scores:
             continue
+        if (scores[appid].get("played_hours") or 0) >= STARTED_HOURS:
+            continue
         entry = games.get(appid, {})
         if _passes(f, entry):
             candidates.append((scores[appid], appid, entry, row["name"]))
-    candidates.sort(key=lambda c: c[0]["score"], reverse=True)
+
+    def rank(c) -> tuple[int, float]:
+        if not f.include_tags:
+            return 0, c[0]["score"]
+        # Primero los que cumplen más tags pedidos; dentro, gusto + relevancia.
+        hits = sum(matches(c[2], t) for t in f.include_tags)
+        return hits, (1 - RELEVANCE_WEIGHT) * c[0]["score"] + RELEVANCE_WEIGHT * relevance(c[2], f.include_tags)
+
+    candidates.sort(key=rank, reverse=True)
 
     picked, skipped, anchors = [], [], set()
     for c in candidates:
@@ -136,6 +182,6 @@ def netflix_rows(games: dict, scores: dict, backlog: list[dict]) -> list[tuple[s
     return rows
 
 
-def top_tags(games: dict, n: int = 80) -> list[str]:
+def top_tags(games: dict, n: int | None = None) -> list[str]:
     counts = Counter(t for e in games.values() for t in (e.get("tags") or {}))
     return [t for t, _ in counts.most_common(n)]

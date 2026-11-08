@@ -4,7 +4,7 @@ import anthropic
 import httpx2 as httpx
 import pytest
 
-from llm import MODEL, LLMError, parse_request, write_intro
+from llm import MODEL, LLMError, Request, parse_request, write_intro
 from recommender import Filters, Recommendation
 
 KNOWN = ["Relajantes", "Roguelike", "Estrategia", "Terror"]
@@ -14,17 +14,18 @@ class FakeClient:
     def __init__(self, content=None, error=None):
         self.kwargs = None
         self._content, self._error = content or [], error
+        self._usage = None
         self.messages = SimpleNamespace(create=self._create)
 
     def _create(self, **kw):
         self.kwargs = kw
         if self._error:
             raise self._error
-        return SimpleNamespace(content=self._content, stop_reason="end_turn")
+        return SimpleNamespace(content=self._content, stop_reason="end_turn", usage=self._usage)
 
 
-def tool_use(inp):
-    return [SimpleNamespace(type="tool_use", name="set_filters", input=inp)]
+def tool_use(inp, name="set_filters"):
+    return [SimpleNamespace(type="tool_use", name=name, input=inp)]
 
 
 def test_model_is_haiku():
@@ -33,24 +34,50 @@ def test_model_is_haiku():
 
 def test_parse_request_maps_tool_input():
     c = FakeClient(tool_use({"max_hours": 10, "include_tags": ["Relajantes"]}))
-    assert parse_request("algo tranquilo de 10 horas", KNOWN, client=c) == Filters(
-        max_hours=10, include_tags=["Relajantes"])
+    assert parse_request("algo tranquilo de 10 horas", KNOWN, client=c) == Request(filters=Filters(
+        max_hours=10, include_tags=["Relajantes"]))
 
 
 def test_parse_request_drops_unknown_tags_and_clamps_limit():
     c = FakeClient(tool_use({"include_tags": ["Inventado", "roguelike"], "exclude_tags": ["Nada"],
                              "limit": 9, "min_positive": 1.7}))
-    f = parse_request("x", KNOWN, client=c)
+    f = parse_request("x", KNOWN, client=c).filters
     assert f.include_tags == ["roguelike"] and f.exclude_tags == []
     assert f.limit == 5 and f.min_positive == 1.0
 
 
-def test_parse_request_forces_tool_and_model():
+def test_parse_request_forces_a_tool_and_model():
     c = FakeClient(tool_use({}))
     parse_request("x", KNOWN, client=c)
     assert c.kwargs["model"] == MODEL
-    assert c.kwargs["tool_choice"] == {"type": "tool", "name": "set_filters"}
+    assert c.kwargs["tool_choice"] == {"type": "any"}
+    assert [t["name"] for t in c.kwargs["tools"]] == ["set_filters", "game_info", "recent_games"]
     assert "Relajantes" in c.kwargs["system"]
+    assert c.kwargs["messages"][0]["content"] == "x"
+
+
+def test_parse_request_game_info():
+    c = FakeClient(tool_use({"name": " Hades "}, name="game_info"))
+    assert parse_request("cuánto he jugado al Hades", KNOWN, client=c) == Request(kind="game", game="Hades")
+
+
+def test_parse_request_recent_games_clamps_limit():
+    assert parse_request("x", KNOWN, client=FakeClient(tool_use({}, name="recent_games"))) == Request(
+        kind="recent", limit=10)
+    got = parse_request("x", KNOWN, client=FakeClient(tool_use({"limit": 99}, name="recent_games")))
+    assert got.limit == 20
+
+
+def test_parse_request_game_info_without_name_falls_back_to_recommend():
+    got = parse_request("x", KNOWN, client=FakeClient(tool_use({"name": " "}, name="game_info")))
+    assert got.kind == "recommend"
+
+
+def test_parse_request_sends_previous_message_as_context():
+    c = FakeClient(tool_use({}))
+    parse_request("¿y de estrategia?", KNOWN, client=c, previous="algo corto")
+    content = c.kwargs["messages"][0]["content"]
+    assert "algo corto" in content and content.endswith("Mensaje actual: ¿y de estrategia?")
 
 
 def test_parse_request_without_tool_call_raises():
@@ -76,6 +103,13 @@ def test_write_intro_returns_text():
     assert "Hades" in c.kwargs["messages"][0]["content"]
 
 
+def test_write_intro_sees_game_tags():
+    c = FakeClient([SimpleNamespace(type="text", text="Ok.")])
+    r = Recommendation("1", "Mount & Blade", 0.9, "porque jugaste X", 42.0, 91, ["Rol", "Medievales"])
+    write_intro("algo de rol", [r], client=c)
+    assert "tags: Rol, Medievales" in c.kwargs["messages"][0]["content"]
+
+
 def test_write_intro_empty_raises():
     with pytest.raises(LLMError):
         write_intro("x", [rec()], client=FakeClient([SimpleNamespace(type="text", text="  ")]))
@@ -89,3 +123,33 @@ def test_missing_api_key_raises_llmerror(monkeypatch):
         parse_request("x", KNOWN)
     with pytest.raises(LLMError):
         write_intro("x", [rec()])
+
+
+def test_each_call_records_real_usage():
+    import usage
+    c = FakeClient(tool_use({}))
+    c._usage = SimpleNamespace(input_tokens=3000, output_tokens=80)
+    parse_request("x", KNOWN, client=c)
+    write_intro("x", [rec()], client=FakeClient([SimpleNamespace(type="text", text="Hola.")]))
+    stats = usage.month_stats()
+    assert stats.calls == 2 and stats.input_tokens == 3000 and stats.output_tokens == 80
+    kinds = [line.split('"kind": "')[1].split('"')[0] for line in usage.PATH.read_text().splitlines()]
+    assert kinds == ["parse", "intro"]
+
+
+def test_budget_exhausted_blocks_calls(monkeypatch):
+    import usage
+    from llm import BudgetExceeded
+    monkeypatch.setenv("LLM_MONTHLY_BUDGET_USD", "0.01")
+    usage.record(usage.Usage(model=MODEL, kind="parse", output_tokens=20_000))  # 0.01 $
+    c = FakeClient(tool_use({}))
+    with pytest.raises(BudgetExceeded) as exc:
+        parse_request("x", KNOWN, client=c)
+    assert c.kwargs is None  # ni se llegó a llamar a la API
+    assert isinstance(exc.value, LLMError) and "0.01" in str(exc.value)
+
+
+
+def test_write_intro_drops_repeated_bullet_list():
+    c = FakeClient([SimpleNamespace(type="text", text="Tres de rol para ti.\n\n- Mount & Blade\n2. Otro")])
+    assert write_intro("rol", [rec()], client=c) == "Tres de rol para ti."
