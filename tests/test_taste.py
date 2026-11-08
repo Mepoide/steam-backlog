@@ -126,3 +126,12 @@ def test_idf_prefers_distinctive_shared_tags():
     # Sin IDF (comportamiento anterior) ganaba el shooter: lo que este cambio corrige.
     plain = score_pending(games, playtime, backlog, build_profile(games, playtime, TODAY))
     assert plain["shooter"]["sim"] > plain["rogue"]["sim"]
+
+
+def test_scores_include_played_hours():
+    s = score_pending(*scenario())
+    assert s["p1"]["played_hours"] == 0.0
+    games, playtime, backlog, _ = scenario()
+    playtime["p1"] = pt(3.5)
+    assert score_pending(games, playtime, backlog, build_profile(games, playtime, TODAY))["p1"][
+        "played_hours"] == 3.5

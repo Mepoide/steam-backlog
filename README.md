@@ -78,12 +78,19 @@ Comandos:
   La duración es la del juego completo (HowLongToBeat); los géneros van
   separados por comas.
 - `/buscar <texto>`: busca en el backlog y muestra estado, duración y reseñas.
+- `/juego <nombre>`: ficha del juego: horas jugadas, última partida, fecha de
+  compra (o de llegada a la biblioteca familiar), duración, reseñas y tags.
+- `/recientes [n]`: lo último que ha llegado a tu biblioteca, por fecha.
 - `/marcar <juego> <estado>`: pide confirmación con botones, actualiza
   `backlog.csv` y hace commit + push.
 - `/coste`: llamadas, tokens y dólares gastados en IA este mes, frente al tope.
-- Texto libre ("algo tranquilo, estoy quemado"): Claude lo traduce a filtros,
-  el recomendador elige y Claude escribe una frase de introducción. Claude
-  nunca elige los juegos. Con tags pedidos, el orden mezcla tu gusto con
+- Texto libre: Claude decide si preguntas por un juego («cuánto he jugado al
+  Hades» → ficha), por lo último que has comprado («qué he comprado hace poco»
+  → recientes) o qué jugar («algo tranquilo, estoy quemado» → filtros, el
+  recomendador elige y Claude escribe una frase de introducción). Claude nunca
+  elige los juegos. Tiene en cuenta tu mensaje anterior («¿y de estrategia?»).
+- No se recomiendan juegos con 2 h o más jugadas aunque sigan en «pendiente»
+  (el backlog nace con todo en «pendiente»; márcalos con `/marcar` cuando quieras). Con tags pedidos, el orden mezcla tu gusto con
   cuánto pesa cada tag en el juego, así que «tipo granja» no saca un juego que
   solo es un poco «Casual».
 

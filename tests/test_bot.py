@@ -6,7 +6,8 @@ from bot import build_application
 def test_build_application_registers_commands():
     app = build_application("123:ABC", 42)
     cmds = {c for h in app.handlers[0] if isinstance(h, CommandHandler) for c in h.commands}
-    assert cmds == {"start", "ayuda", "top", "recomienda", "buscar", "marcar", "coste"}
+    assert cmds == {"start", "ayuda", "top", "recomienda", "buscar", "juego", "recientes",
+                    "marcar", "coste"}
 
 
 def test_build_application_has_text_callback_and_unauthorized_handlers():

@@ -64,3 +64,33 @@ def test_load_playtime_empty_last_played_is_none(tmp_path):
     raw, cache = tmp_path / "raw.csv", tmp_path / "cache.json"
     write_raw(raw, [{"appid": "7", "name": "X", "playtime_hours": "", "last_played": ""}])
     assert load_playtime(raw, cache) == {"7": Playtime(0.0, None)}
+
+
+def test_read_library_parses_raw_without_writing(tmp_path):
+    from datetime import date
+    from conftest import write_raw
+    from library import read_library
+    raw = tmp_path / "raw.csv"
+    write_raw(raw, [
+        {"appid": "1", "name": "Hades II", "source": "propio", "playtime_hours": "71.8",
+         "last_played": "2026-11-08", "acquired": "2026-07-22", "owners": "765"},
+        {"appid": "2", "name": "Hades", "source": "compartido", "playtime_hours": "0.0", "acquired": ""},
+    ])
+    before = set(tmp_path.iterdir())
+    lib = read_library(raw)
+    assert set(tmp_path.iterdir()) == before
+    assert lib["1"] == {"name": "Hades II", "source": "propio", "hours": 71.8,
+                        "last_played": date(2026, 11, 8), "acquired": date(2026, 7, 22)}
+    assert lib["2"]["acquired"] is None and lib["2"]["hours"] == 0.0
+    assert "owners" not in lib["1"]  # los SteamIDs no salen de aquí
+    assert read_library(tmp_path / "no.csv") == {}
+
+
+
+def test_dates_before_steam_are_unknown(tmp_path):
+    from library import read_library
+    raw = tmp_path / "raw.csv"
+    write_raw(raw, [{"appid": "1", "name": "COD", "playtime_hours": "4", "last_played": "1970-01-02",
+                     "acquired": "2009-11-13"}])
+    lib = read_library(raw)["1"]
+    assert lib["last_played"] is None and lib["acquired"] == date(2009, 11, 13)

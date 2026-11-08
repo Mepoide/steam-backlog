@@ -26,6 +26,7 @@ class Recommendation:
     reason: str
     hours: float | None
     positive_pct: int | None
+    tags: list[str] = field(default_factory=list)  # principales, para que la intro no invente
 
     @property
     def url(self) -> str:
@@ -47,6 +48,7 @@ def fold(s: str) -> str:
 MIN_TAG_SHARE = 0.25  # un tag cuenta si pesa al menos esto respecto al tag principal del juego
 GENRE_SHARE = 0.5  # los géneros de la tienda no tienen peso: cuentan como un tag medio
 RELEVANCE_WEIGHT = 0.5  # con tags pedidos, el orden mezcla gusto (score) y cuánto encaja
+STARTED_HOURS = 2.0  # con estas horas jugadas ya no es una sugerencia nueva, aunque siga «pendiente»
 
 
 def tag_share(entry: dict, term: str) -> float:
@@ -124,7 +126,9 @@ def _to_rec(appid: str, entry: dict, score: dict, fallback_name: str) -> Recomme
     pct = round(pos * 100) if pos is not None else None
     return Recommendation(appid=appid, name=entry.get("name") or fallback_name,
                           score=score["score"], reason=_reason(score, pct),
-                          hours=entry.get("hltb_main"), positive_pct=pct)
+                          hours=entry.get("hltb_main"), positive_pct=pct,
+                          tags=[t for t, _ in sorted((entry.get("tags") or {}).items(),
+                                                     key=lambda kv: -kv[1])[:5]])
 
 
 def _select(f: Filters, games: dict, scores: dict, backlog: list[dict],
@@ -134,14 +138,18 @@ def _select(f: Filters, games: dict, scores: dict, backlog: list[dict],
         appid = row["appid"]
         if row["estado"] != "pendiente" or appid in exclude or appid not in scores:
             continue
+        if (scores[appid].get("played_hours") or 0) >= STARTED_HOURS:
+            continue
         entry = games.get(appid, {})
         if _passes(f, entry):
             candidates.append((scores[appid], appid, entry, row["name"]))
 
-    def rank(c) -> float:
+    def rank(c) -> tuple[int, float]:
         if not f.include_tags:
-            return c[0]["score"]
-        return (1 - RELEVANCE_WEIGHT) * c[0]["score"] + RELEVANCE_WEIGHT * relevance(c[2], f.include_tags)
+            return 0, c[0]["score"]
+        # Primero los que cumplen más tags pedidos; dentro, gusto + relevancia.
+        hits = sum(matches(c[2], t) for t in f.include_tags)
+        return hits, (1 - RELEVANCE_WEIGHT) * c[0]["score"] + RELEVANCE_WEIGHT * relevance(c[2], f.include_tags)
 
     candidates.sort(key=rank, reverse=True)
 

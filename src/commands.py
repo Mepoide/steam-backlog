@@ -9,8 +9,9 @@ import git_sync
 import llm as llm_module
 import usage
 from config import BACKLOG_CSV, GAMES_JSON, SCORES_JSON
-from library import ESTADOS, read_backlog, set_estado
-from recommender import Filters, Recommendation, fold, netflix_rows, recommend, top_tags
+from library import ESTADOS, read_backlog, read_library, set_estado
+from recommender import (STARTED_HOURS, Filters, Recommendation, fold, netflix_rows, recommend,
+                         top_tags)
 
 log = logging.getLogger(__name__)
 ESTADOS_TXT = "pendiente, jugando, terminado, abandonado, descartado"
@@ -29,6 +30,7 @@ class Store:
     games: dict
     scores: dict
     backlog: list[dict]
+    library: dict = field(default_factory=dict)  # export crudo: origen, horas y fechas
 
 
 def _load_json(path) -> dict:
@@ -37,7 +39,7 @@ def _load_json(path) -> dict:
 
 def load_store() -> Store:
     return Store(games=_load_json(GAMES_JSON), scores=_load_json(SCORES_JSON),
-                 backlog=read_backlog(BACKLOG_CSV))
+                 backlog=read_backlog(BACKLOG_CSV), library=read_library())
 
 
 def _hours(h: float | None) -> str:
@@ -61,6 +63,8 @@ def cmd_ayuda() -> Reply:
         "/recomienda [duración] [géneros] — p. ej. /recomienda 10h roguelike, estrategia\n"
         "   (la duración es la del juego completo, según HowLongToBeat)\n"
         "/buscar <texto> — busca en el backlog\n"
+        "/juego <nombre> — ficha: horas jugadas, fechas, duración y reseñas\n"
+        "/recientes — lo último que ha llegado a tu biblioteca\n"
         f"/marcar <juego> <estado> — estados: {ESTADOS_TXT}\n"
         "/coste — lo que lleva gastado la IA este mes\n\n"
         "O escríbeme sin comando: «algo tranquilo, estoy quemado»."
@@ -123,6 +127,70 @@ def cmd_buscar(store: Store, args: str) -> Reply:
     return Reply("\n".join(_entry_line(store, r) for r in rows))
 
 
+def _game_matches(backlog: list[dict], query: str, n: int = 3) -> list[dict]:
+    """Exacto primero y luego los que lo contienen: «hades» → Hades y Hades II."""
+    q = fold(query.strip())
+    exact = [r for r in backlog if fold(r["name"]) == q]
+    sub = [r for r in backlog if q in fold(r["name"]) and r not in exact]
+    return (exact + sub)[:n] or find_games(backlog, query, n=n)
+
+
+def _played(hours: float | None) -> str:
+    return "sin jugar" if not hours else f"{hours:.1f} h"
+
+
+def _detail(store: Store, row: dict) -> str:
+    appid = row["appid"]
+    g, lib = store.games.get(appid, {}), store.library.get(appid, {})
+    lines = [f"{row['name']} — {row['estado']}"]
+    hours, last, acquired = lib.get("hours"), lib.get("last_played"), lib.get("acquired")
+    played = (f"{hours:.1f} h jugadas" + (f" (última vez {last})" if last else "")) if hours else "Sin jugar"
+    if lib.get("source") == "compartido":
+        origin = "biblioteca familiar" + (f", disponible desde {acquired}" if acquired else "")
+    elif lib:
+        origin = "comprado" + (f" el {acquired}" if acquired else "")
+    else:
+        origin = ""
+    lines.append(played + (f" · {origin}" if origin else ""))
+    if g.get("hltb_main"):
+        extra = f" · {_hours(g['hltb_extra'])} h con extras" if g.get("hltb_extra") else ""
+        lines.append(f"Duración: {_hours(g['hltb_main'])} h historia principal (HowLongToBeat){extra}")
+    if g.get("reviews_total"):
+        pct = round(100 * g["reviews_positive"] / g["reviews_total"])
+        lines.append(f"Reseñas: {pct} % 👍 de {g['reviews_total']}")
+    tags = sorted((g.get("tags") or {}).items(), key=lambda kv: -kv[1])[:6]
+    if tags:
+        lines.append("Tags: " + ", ".join(t for t, _ in tags))
+    if row["estado"] == "pendiente" and (hours or 0) >= STARTED_HOURS:
+        lines.append(f"Sigue en «pendiente» y no te lo recomiendo: /marcar {row['name']} jugando "
+                     "(o terminado)")
+    lines.append(f"https://store.steampowered.com/app/{appid}")
+    return "\n".join(lines)
+
+
+def cmd_juego(store: Store, args: str) -> Reply:
+    if not args.strip():
+        return Reply("Uso: /juego <nombre>")
+    rows = _game_matches(store.backlog, args)
+    if not rows:
+        return Reply(f"No encuentro «{args.strip()}» en tu biblioteca.")
+    return Reply("\n\n".join(_detail(store, r) for r in rows))
+
+
+def cmd_recientes(store: Store, limit: int = 10) -> Reply:
+    estado = {r["appid"]: r["estado"] for r in store.backlog}
+    dated = sorted(((v["acquired"], k, v) for k, v in store.library.items() if v.get("acquired")),
+                   key=lambda t: t[0], reverse=True)[:limit]
+    if not dated:
+        return Reply("No tengo las fechas de tu biblioteca: falta el export (export.py o el job diario).")
+    lines = ["Últimos juegos añadidos a tu biblioteca:"]
+    for i, (acq, appid, v) in enumerate(dated, 1):
+        origin = "familiar" if v.get("source") == "compartido" else "propio"
+        lines.append(f"{i}. {v['name']} — {acq} · {origin} · {_played(v.get('hours'))} · "
+                     f"{estado.get(appid, 'fuera del backlog')}")
+    return Reply("\n".join(lines))
+
+
 def cmd_marcar(store: Store, args: str) -> Reply:
     words = args.split()
     if len(words) < 2:
@@ -176,12 +244,12 @@ def cmd_coste(budget: float | None = None) -> Reply:
     return Reply("\n".join(lines))
 
 
-def free_text(store: Store, text: str, llm=llm_module) -> Reply:
+def free_text(store: Store, text: str, llm=llm_module, previous: str | None = None) -> Reply:
     args = (store.games, store.scores, store.backlog)
     if not store.scores:
         return Reply(NO_DATA)  # sin datos no merece la pena gastar una llamada
     try:
-        filters = llm.parse_request(text, top_tags(store.games))
+        request = llm.parse_request(text, top_tags(store.games), previous=previous)
     except llm.LLMError as e:
         log.warning("LLM (parse_request) falló: %s", e)
         recs = recommend(Filters(), *args)
@@ -190,6 +258,13 @@ def free_text(store: Store, text: str, llm=llm_module) -> Reply:
         why = ("Este mes ya se ha gastado el presupuesto de IA (/coste)"
                if isinstance(e, llm_module.BudgetExceeded) else "No he podido usar la IA ahora mismo")
         return Reply(f"{why}; aquí van tus recomendaciones de siempre:\n\n" + render(None, recs))
+    if request.kind == "game":
+        log.info("Texto libre «%s» → ficha de «%s»", text, request.game)
+        return cmd_juego(store, request.game)
+    if request.kind == "recent":
+        log.info("Texto libre «%s» → recientes (%d)", text, request.limit)
+        return cmd_recientes(store, request.limit)
+    filters = request.filters
     recs = recommend(filters, *args)
     log.info("Texto libre «%s» → %s → %s", text, filters, [r.name for r in recs])
     if not recs:

@@ -62,8 +62,30 @@ def set_estado(appid: str, estado: str, path=BACKLOG_CSV) -> bool:
     return False
 
 
+STEAM_EPOCH = date(2003, 9, 12)  # antes de Steam no hay fechas reales (a veces llega 1970-01-01)
+
+
 def _parse_date(s: str) -> date | None:
-    return date.fromisoformat(s) if s else None
+    d = date.fromisoformat(s) if s else None
+    return d if d is not None and d >= STEAM_EPOCH else None
+
+
+def read_library(raw_csv=RAW_CSV) -> dict[str, dict]:
+    """Datos del export por appid, solo lectura: origen, horas y fechas (sin SteamIDs)."""
+    raw_csv = Path(raw_csv)
+    if not raw_csv.exists():
+        return {}
+    out = {}
+    with open(raw_csv, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            out[row["appid"]] = {
+                "name": row.get("name") or "",
+                "source": row.get("source") or "",
+                "hours": float(row.get("playtime_hours") or 0),
+                "last_played": _parse_date(row.get("last_played") or ""),
+                "acquired": _parse_date(row.get("acquired") or ""),
+            }
+    return out
 
 
 def load_playtime(raw_csv=RAW_CSV, cache_path=PLAYTIME_CACHE) -> dict[str, Playtime]:

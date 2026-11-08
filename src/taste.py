@@ -118,6 +118,7 @@ def score_pending(games: dict, playtime: dict[str, Playtime], backlog: list[dict
             "score": W_SIM * sim + W_QUALITY * q, "sim": sim, "quality": q,
             "anchor_appid": anchor, "anchor_name": games[anchor]["name"] if anchor else None,
             "shared_tags": shared,
+            "played_hours": playtime[appid].hours if appid in playtime else 0.0,
         }
     return scores
 

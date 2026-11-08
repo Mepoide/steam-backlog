@@ -27,6 +27,8 @@ SETUP_CHAT_ID = 0  # ningún chat de Telegram tiene id 0: modo configuración, n
 MENU = (("top", "Tus filas: para ti, sesión corta, joyas"),
         ("recomienda", "Filtra por duración y géneros"),
         ("buscar", "Busca un juego en el backlog"),
+        ("juego", "Ficha: horas jugadas, fechas, duración"),
+        ("recientes", "Lo último que llegó a tu biblioteca"),
         ("marcar", "Cambia el estado de un juego"),
         ("coste", "Gasto de IA de este mes"),
         ("ayuda", "Qué puedo hacer"))
@@ -81,9 +83,23 @@ async def on_marcar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _send(update, lambda: commands.cmd_marcar(commands.load_store(), args))
 
 
+async def on_juego(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    args = _args(context)
+    await _send(update, lambda: commands.cmd_juego(commands.load_store(), args))
+
+
+async def on_recientes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    raw = _args(context).strip()
+    limit = min(max(int(raw), 1), 30) if raw.isdigit() else 10
+    await _send(update, lambda: commands.cmd_recientes(commands.load_store(), limit))
+
+
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.effective_message.text or ""
-    await _send(update, lambda: commands.free_text(commands.load_store(), text))
+    # El mensaje anterior da contexto a «¿y de estrategia?» o «fecha de compra me refiero».
+    previous = context.chat_data.get("previous")
+    context.chat_data["previous"] = text
+    await _send(update, lambda: commands.free_text(commands.load_store(), text, previous=previous))
 
 
 async def on_coste(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -144,6 +160,7 @@ def build_application(token: str, allowed_chat_id: int) -> Application:
     allowed = filters.Chat(chat_id=allowed_chat_id)
     for names, fn in ((["start", "ayuda"], on_ayuda), (["top"], on_top),
                       (["recomienda"], on_recomienda), (["buscar"], on_buscar),
+                      (["juego"], on_juego), (["recientes"], on_recientes),
                       (["marcar"], on_marcar), (["coste"], on_coste)):
         app.add_handler(CommandHandler(names, fn, filters=allowed))
     app.add_handler(MessageHandler(allowed & filters.TEXT & ~filters.COMMAND, on_text))

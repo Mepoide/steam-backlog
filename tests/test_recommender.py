@@ -155,3 +155,20 @@ def test_max_hours_skips_multiplayer_only_games():
     scores = {"mp": sc(0.9), "sp": sc(0.5), "u": sc(0.4)}
     assert ids(recommend(Filters(max_hours=5), games, scores, pending("mp", "sp", "u"))) == ["sp", "u"]
     assert "mp" in ids(recommend(Filters(), games, scores, pending("mp", "sp", "u")))
+
+
+def test_started_games_are_not_recommended():
+    # Las 403 filas del backlog nacen «pendiente»: Civilization VI con 234 h no es una sugerencia.
+    games = {"civ": make_game("Civ VI"), "nuevo": make_game("Nuevo"), "probado": make_game("Probado")}
+    scores = {"civ": {**sc(0.9), "played_hours": 234.0}, "nuevo": sc(0.5),
+              "probado": {**sc(0.7), "played_hours": 1.5}}
+    assert ids(recommend(Filters(), games, scores, pending("civ", "nuevo", "probado"))) == ["probado", "nuevo"]
+
+
+def test_games_matching_all_requested_tags_come_first():
+    # «rol por turnos»: el que tiene ambos va antes que el de solo «Rol» aunque puntúe menos.
+    games = {"accion": make_game("DBZ", tags={"Rol": 100, "Acción": 100}),
+             "turnos": make_game("Divinity", tags={"Rol": 60, "Por turnos": 50})}
+    scores = {"accion": sc(0.9), "turnos": sc(0.3)}
+    f = Filters(include_tags=["Rol", "Por turnos"])
+    assert ids(recommend(f, games, scores, pending("accion", "turnos"))) == ["turnos", "accion"]
