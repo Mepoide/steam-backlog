@@ -31,8 +31,11 @@ resto necesita el venv. Ejecuta siempre desde la raíz del repo.
   el valor de `webapi_token`. **Caduca en ~24 h**: si caduca, el export sigue
   solo con la biblioteca propia y el perfil conserva las últimas horas
   conocidas de los juegos compartidos. Renuévalo cuando quieras refrescarlas.
-- `ANTHROPIC_API_KEY`: para el texto libre del bot (Claude Haiku, céntimos por
-  consulta). Sin ella, el bot responde igual con sus recomendaciones de siempre.
+- `ANTHROPIC_API_KEY`: para el texto libre del bot (Claude Haiku 5.5, unos
+  0,04 céntimos por consulta). Sin ella, el bot responde igual con sus
+  recomendaciones de siempre.
+- `LLM_MONTHLY_BUDGET_USD` (opcional, 1 $ por defecto; `0` = sin tope): tope de
+  gasto mensual en IA. Ver "Control de costes".
 - `TELEGRAM_BOT_TOKEN` y `TELEGRAM_ALLOWED_CHAT_ID`: ver "Bot de Telegram".
 
 ## Pipeline
@@ -77,11 +80,27 @@ Comandos:
 - `/buscar <texto>`: busca en el backlog y muestra estado, duración y reseñas.
 - `/marcar <juego> <estado>`: pide confirmación con botones, actualiza
   `backlog.csv` y hace commit + push.
+- `/coste`: llamadas, tokens y dólares gastados en IA este mes, frente al tope.
 - Texto libre ("algo tranquilo, estoy quemado"): Claude lo traduce a filtros,
   el recomendador elige y Claude escribe una frase de introducción. Claude
-  nunca elige los juegos.
+  nunca elige los juegos. Con tags pedidos, el orden mezcla tu gusto con
+  cuánto pesa cada tag en el juego, así que «tipo granja» no saca un juego que
+  solo es un poco «Casual».
 
-El bot usa long polling: no hace falta abrir puertos ni exponer nada.
+El bot usa long polling: no hace falta abrir puertos ni exponer nada. Al
+arrancar publica su menú de comandos; la foto de perfil se pone una vez con
+`.venv/bin/python ops/set_bot_photo.py` (icono en `assets/`, se regenera con
+`assets/make_icon.sh`).
+
+### Control de costes
+
+Cada llamada a Claude guarda su `usage` real (tokens de entrada, salida y
+caché) en `data/llm_usage.jsonl`, y el coste se calcula con una tabla de
+precios que solo contiene los modelos que usa el bot. Si algún día se cambia de
+modelo y no se añade su precio, esas llamadas se cuentan aparte como «sin
+precio» en vez de estimarse. Al pasar el 80 % del tope mensual, el log avisa.
+Al llegar al 100 %, el bot deja de llamar a la API hasta el mes siguiente y
+sigue respondiendo con las recomendaciones sin IA.
 
 ## Mac mini (launchd)
 
@@ -96,7 +115,8 @@ scripts/daily.sh        # primera ejecución a mano (~15 min)
 ops/install_launchd.sh  # job diario a las 06:00 + bot siempre activo
 ```
 
-Logs en `data/logs/{daily,bot}.log`. Reinicia el bot tras cambiar `.env`:
+Logs en `data/logs/{daily,bot}.log`. El del bot registra cada mensaje, los
+filtros que sacó Claude y los juegos recomendados, para poder revisar la calidad. Reinicia el bot tras cambiar `.env`:
 `launchctl kickstart -k gui/$(id -u)/com.steambacklog.bot`.
 
 Antes de subir, `git_sync` integra los cambios remotos (`pull --rebase`), así

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 import git_sync
 import llm as llm_module
+import usage
 from config import BACKLOG_CSV, GAMES_JSON, SCORES_JSON
 from library import ESTADOS, read_backlog, set_estado
 from recommender import Filters, Recommendation, fold, netflix_rows, recommend, top_tags
@@ -60,7 +61,8 @@ def cmd_ayuda() -> Reply:
         "/recomienda [duración] [géneros] — p. ej. /recomienda 10h roguelike, estrategia\n"
         "   (la duración es la del juego completo, según HowLongToBeat)\n"
         "/buscar <texto> — busca en el backlog\n"
-        f"/marcar <juego> <estado> — estados: {ESTADOS_TXT}\n\n"
+        f"/marcar <juego> <estado> — estados: {ESTADOS_TXT}\n"
+        "/coste — lo que lleva gastado la IA este mes\n\n"
         "O escríbeme sin comando: «algo tranquilo, estoy quemado»."
     )
 
@@ -155,8 +157,29 @@ def confirm_mark(appid: str, estado: str, backlog_path=BACKLOG_CSV,
     return Reply(text)
 
 
+def _k(n: int) -> str:
+    return f"{n / 1000:.1f}K"
+
+
+def cmd_coste(budget: float | None = None) -> Reply:
+    stats = usage.month_stats()
+    budget = usage.budget_usd() if budget is None else budget
+    lines = [f"IA este mes: {stats.calls} llamadas · {_k(stats.input_tokens)} tokens de entrada · "
+             f"{_k(stats.output_tokens)} de salida"]
+    if budget > 0:
+        lines.append(f"Coste: {stats.cost_usd:.4f} $ de {budget:.2f} $ "
+                     f"({round(100 * stats.cost_usd / budget)} %). Al llegar al tope sigo sin IA.")
+    else:
+        lines.append(f"Coste: {stats.cost_usd:.4f} $ (sin tope: LLM_MONTHLY_BUDGET_USD=0)")
+    if stats.unpriced_calls:
+        lines.append(f"Ojo: {stats.unpriced_calls} llamadas sin precio conocido no suman al coste.")
+    return Reply("\n".join(lines))
+
+
 def free_text(store: Store, text: str, llm=llm_module) -> Reply:
     args = (store.games, store.scores, store.backlog)
+    if not store.scores:
+        return Reply(NO_DATA)  # sin datos no merece la pena gastar una llamada
     try:
         filters = llm.parse_request(text, top_tags(store.games))
     except llm.LLMError as e:
@@ -164,9 +187,11 @@ def free_text(store: Store, text: str, llm=llm_module) -> Reply:
         recs = recommend(Filters(), *args)
         if not recs:
             return Reply(NO_DATA)
-        return Reply("No he podido usar la IA ahora mismo; aquí van tus recomendaciones de siempre:\n\n"
-                     + render(None, recs))
+        why = ("Este mes ya se ha gastado el presupuesto de IA (/coste)"
+               if isinstance(e, llm_module.BudgetExceeded) else "No he podido usar la IA ahora mismo")
+        return Reply(f"{why}; aquí van tus recomendaciones de siempre:\n\n" + render(None, recs))
     recs = recommend(filters, *args)
+    log.info("Texto libre «%s» → %s → %s", text, filters, [r.name for r in recs])
     if not recs:
         recs = recommend(Filters(limit=filters.limit), *args)
         if not recs:

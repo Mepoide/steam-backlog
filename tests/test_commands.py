@@ -3,8 +3,8 @@ from types import SimpleNamespace
 import pytest
 
 import llm as real_llm
-from commands import (Store, cmd_ayuda, cmd_buscar, cmd_marcar, cmd_recomienda, cmd_top,
-                      confirm_mark, find_games, free_text, parse_recomienda_args, render)
+from commands import (NO_DATA, Store, cmd_ayuda, cmd_buscar, cmd_coste, cmd_marcar, cmd_recomienda,
+                      cmd_top, confirm_mark, find_games, free_text, parse_recomienda_args, render)
 from conftest import make_backlog, make_game
 from library import read_backlog, write_backlog
 from recommender import Filters, Recommendation
@@ -43,7 +43,7 @@ def test_render_format():
 
 def test_ayuda_lists_commands():
     text = cmd_ayuda().text
-    for c in ("/top", "/recomienda", "/buscar", "/marcar"):
+    for c in ("/top", "/recomienda", "/buscar", "/marcar", "/coste"):
         assert c in text
 
 
@@ -191,3 +191,41 @@ def test_free_text_logs_llm_errors(caplog):
         free_text(store(), "x", llm=fake_llm(intro_error=True))
     msgs = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
     assert len(msgs) == 2 and all("caído" in m for m in msgs)
+
+
+def test_free_text_budget_exhausted_says_so():
+    def parse_request(text, known_tags):
+        raise real_llm.BudgetExceeded("presupuesto mensual de IA agotado (1.00 de 1.00 $)")
+    fake = SimpleNamespace(parse_request=parse_request, write_intro=None, LLMError=real_llm.LLMError)
+    reply = free_text(store(), "x", llm=fake)
+    assert reply.text.startswith("Este mes ya se ha gastado el presupuesto de IA (/coste); "
+                                 "aquí van tus recomendaciones de siempre:\n\n1. Hades")
+
+
+def test_free_text_without_data_does_not_call_llm():
+    def boom(*a):
+        raise AssertionError("no debería llamar al LLM")
+    fake = SimpleNamespace(parse_request=boom, write_intro=boom, LLMError=real_llm.LLMError)
+    assert free_text(Store(games={}, scores={}, backlog=[]), "x", llm=fake).text == NO_DATA
+
+
+def test_free_text_logs_request_and_result(caplog):
+    with caplog.at_level("INFO", logger="commands"):
+        free_text(store(), "algo corto", llm=fake_llm(Filters(max_hours=10)))
+    msg = " ".join(r.getMessage() for r in caplog.records)
+    assert "algo corto" in msg and "max_hours=10" in msg and "Celeste" in msg
+
+
+def test_coste_reports_month_spend():
+    import usage
+    usage.record(usage.Usage(model=real_llm.MODEL, kind="parse", input_tokens=30_000, output_tokens=1_000))
+    text = cmd_coste(budget=1.0).text
+    assert text.startswith("IA este mes: 1 llamadas · 30.0K tokens de entrada · 1.0K de salida")
+    assert "0.0035 $ de 1.00 $ (0 %)" in text
+
+
+def test_coste_without_budget_and_unpriced():
+    import usage
+    usage.record(usage.Usage(model="claude-otro", kind="parse", input_tokens=10))
+    text = cmd_coste(budget=0).text
+    assert "sin tope" in text and "1 llamadas sin precio conocido" in text

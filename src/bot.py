@@ -10,7 +10,9 @@ import asyncio
 import logging
 import os
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, Update
+from telegram import (BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions,
+                      Update)
+from telegram.error import NetworkError
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ContextTypes,
                           MessageHandler, filters)
 
@@ -22,6 +24,12 @@ ERROR_TEXT = "Algo ha fallado; mira el log del bot."
 MAX_MESSAGE = 4096
 NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 SETUP_CHAT_ID = 0  # ningún chat de Telegram tiene id 0: modo configuración, no responde a nadie
+MENU = (("top", "Tus filas: para ti, sesión corta, joyas"),
+        ("recomienda", "Filtra por duración y géneros"),
+        ("buscar", "Busca un juego en el backlog"),
+        ("marcar", "Cambia el estado de un juego"),
+        ("coste", "Gasto de IA de este mes"),
+        ("ayuda", "Qué puedo hacer"))
 
 
 def _markup(reply: commands.Reply):
@@ -40,6 +48,7 @@ async def _compute(fn) -> commands.Reply:
 
 
 async def _send(update: Update, fn) -> None:
+    log.info("Mensaje: %s", update.effective_message.text or "(sin texto)")
     reply = await _compute(fn)
     await update.effective_message.reply_text(reply.text[:MAX_MESSAGE], reply_markup=_markup(reply),
                                               link_preview_options=NO_PREVIEW)
@@ -77,6 +86,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _send(update, lambda: commands.free_text(commands.load_store(), text))
 
 
+async def on_coste(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _send(update, commands.cmd_coste)
+
+
 def unknown_reply() -> commands.Reply:
     return commands.Reply("No te he entendido.\n\n" + commands.cmd_ayuda().text)
 
@@ -100,6 +113,7 @@ def _on_callback(allowed_chat_id: int):
             return
         await query.answer()
         data = query.data or ""
+        log.info("Botón: %s", data)
         if data.startswith("mark:"):
             _, appid, estado = data.split(":", 2)
             reply = await _compute(lambda: commands.confirm_mark(appid, estado))
@@ -109,17 +123,34 @@ def _on_callback(allowed_chat_id: int):
     return handler
 
 
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    err = context.error
+    if isinstance(err, NetworkError):
+        # Cortes de Telegram (Bad Gateway, timeouts): la librería reintenta sola.
+        log.warning("Red de Telegram: %s (reintentando)", err)
+    else:
+        log.error("Error no controlado", exc_info=err)
+
+
+async def _post_init(app: Application) -> None:
+    try:
+        await app.bot.set_my_commands([BotCommand(n, d) for n, d in MENU])
+    except Exception:
+        log.warning("No se pudo publicar el menú de comandos", exc_info=True)
+
+
 def build_application(token: str, allowed_chat_id: int) -> Application:
-    app = Application.builder().token(token).build()
+    app = Application.builder().token(token).post_init(_post_init).build()
     allowed = filters.Chat(chat_id=allowed_chat_id)
     for names, fn in ((["start", "ayuda"], on_ayuda), (["top"], on_top),
                       (["recomienda"], on_recomienda), (["buscar"], on_buscar),
-                      (["marcar"], on_marcar)):
+                      (["marcar"], on_marcar), (["coste"], on_coste)):
         app.add_handler(CommandHandler(names, fn, filters=allowed))
     app.add_handler(MessageHandler(allowed & filters.TEXT & ~filters.COMMAND, on_text))
     app.add_handler(MessageHandler(allowed & (filters.COMMAND | ~filters.TEXT), on_unknown))
     app.add_handler(CallbackQueryHandler(_on_callback(allowed_chat_id)))
     app.add_handler(MessageHandler(~allowed, on_unauthorized), group=1)
+    app.add_error_handler(on_error)
     return app
 
 
@@ -137,6 +168,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     # httpx registra cada URL de la API de Telegram, que incluye el token del bot.
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpx2").setLevel(logging.WARNING)  # el de anthropic: una línea por llamada
     load_env()
     token = require_env("TELEGRAM_BOT_TOKEN")
     chat_id = parse_allowed_chat_id(os.environ.get("TELEGRAM_ALLOWED_CHAT_ID", ""))

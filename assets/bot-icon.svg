@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="640" viewBox="0 0 640 640">
+  <!-- pila del backlog -->
+  <rect x="215" y="150" width="210" height="26" rx="13" fill="#35607f"/>
+  <rect x="190" y="190" width="260" height="26" rx="13" fill="#4b8fbf"/>
+  <!-- mando -->
+  <path fill="#66c0f4" d="M200 250 H440 C505 250 530 300 545 370 C560 440 548 490 505 495
+    C470 499 452 470 430 440 C420 427 410 420 395 420 H245 C230 420 220 427 210 440
+    C188 470 170 499 135 495 C92 490 80 440 95 370 C110 300 135 250 200 250 Z"/>
+  <!-- cruceta -->
+  <rect x="190" y="305" width="26" height="86" rx="6" fill="#171a21"/>
+  <rect x="160" y="335" width="86" height="26" rx="6" fill="#171a21"/>
+  <!-- botones -->
+  <circle cx="440" cy="318" r="17" fill="#171a21"/>
+  <circle cx="476" cy="352" r="17" fill="#171a21"/>
+  <circle cx="404" cy="352" r="17" fill="#171a21"/>
+  <circle cx="440" cy="386" r="17" fill="#171a21"/>
+</svg>
