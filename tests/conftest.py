@@ -1,5 +1,14 @@
 import csv
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _usage_log_in_tmp(tmp_path, monkeypatch):
+    """Ningún test escribe en el registro real de coste del LLM."""
+    import usage
+    monkeypatch.setattr(usage, "PATH", tmp_path / "llm_usage.jsonl")
+
 RAW_FIELDS = ["appid", "name", "source", "playtime_hours", "playtime_2weeks_hours",
               "last_played", "acquired", "owners", "excluded_reason"]
 

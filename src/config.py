@@ -10,6 +10,7 @@ GAMES_JSON = ENRICHED_DIR / "games.json"
 PROFILE_JSON = ENRICHED_DIR / "profile.json"
 SCORES_JSON = ENRICHED_DIR / "scores.json"
 PLAYTIME_CACHE = ENRICHED_DIR / "playtime_cache.json"
+LLM_USAGE = DATA_DIR / "llm_usage.jsonl"
 BACKLOG_CSV = ROOT / "backlog.csv"
 
 

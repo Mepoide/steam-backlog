@@ -2,9 +2,14 @@
 
 El LLM nunca elige ni puntúa juegos; eso lo hace recommender.py.
 """
+import logging
+
 import anthropic
 
+import usage
 from recommender import Filters, Recommendation, matches
+
+log = logging.getLogger(__name__)
 
 MODEL = "claude-haiku-5-5"
 MAX_LIMIT = 5
@@ -32,8 +37,13 @@ PARSE_SYSTEM = """Traduces lo que pide un jugador a filtros para buscar en su ba
 Llama siempre a set_filters. Reglas:
 - max_hours es la duración TOTAL del juego, no la de la sesión. Úsala solo si el usuario
   habla de juegos cortos o de terminar algo en poco tiempo.
-- Traduce el estado de ánimo a tags usando SOLO esta lista (copia los nombres tal cual):
+- Traduce lo que pide a tags usando SOLO esta lista (copia los nombres tal cual):
 {tags}
+- En include_tags pon de 1 a 3 tags, los más específicos que describan la petición
+  (p. ej. «tipo granja» → Agricultura, Simulador de vida; «tranquilo» → Relajantes, Acogedores).
+  No añadas tags genéricos (Acción, Aventura, Casuales, Indie, Un jugador, Multijugador...)
+  salvo que sean justo lo que pide: «con amigos» sí es Cooperativos en línea o Multijugador.
+- Lo que el usuario quiera evitar va en exclude_tags.
 - Si no hay una petición clara de algo, deja el campo vacío. No inventes tags."""
 
 INTRO_SYSTEM = """Eres el bot de backlog de Steam de un jugador. Escribe en español una
@@ -45,12 +55,32 @@ class LLMError(Exception):
     pass
 
 
-def _create(client, **kwargs):
+class BudgetExceeded(LLMError):
+    """Tope mensual de gasto alcanzado: no se llama a la API hasta el mes que viene."""
+
+
+def _check_budget() -> None:
+    stats, budget = usage.month_stats(), usage.budget_usd()
+    level = usage.budget_level(stats, budget)
+    if level == "forced":
+        raise BudgetExceeded(f"presupuesto mensual de IA agotado ({stats.cost_usd:.2f} de {budget:.2f} $)")
+    if level == "warn":
+        log.warning("Gasto de IA del mes al %d %% (%.3f de %.2f $)",
+                    100 * stats.cost_usd / budget, stats.cost_usd, budget)
+
+
+def _create(client, kind: str, **kwargs):
+    _check_budget()
     try:
         c = client if client is not None else anthropic.Anthropic()
-        return c.messages.create(**kwargs)
+        resp = c.messages.create(**kwargs)
     except (anthropic.AnthropicError, TypeError) as e:  # sin credenciales el SDK lanza TypeError
         raise LLMError(f"{type(e).__name__}: {e}") from e
+    try:
+        usage.record(usage.from_response(kwargs["model"], kind, resp))
+    except OSError:
+        log.exception("No se pudo registrar el uso del LLM")
+    return resp
 
 
 def _known(tags: list[str], known: list[str]) -> list[str]:
@@ -60,7 +90,7 @@ def _known(tags: list[str], known: list[str]) -> list[str]:
 
 def parse_request(text: str, known_tags: list[str], client=None) -> Filters:
     resp = _create(
-        client, model=MODEL, max_tokens=1000,
+        client, "parse", model=MODEL, max_tokens=1000,
         system=PARSE_SYSTEM.format(tags=", ".join(known_tags)),
         tools=[FILTERS_TOOL], tool_choice={"type": "tool", "name": "set_filters"},
         messages=[{"role": "user", "content": text}],
@@ -83,7 +113,7 @@ def parse_request(text: str, known_tags: list[str], client=None) -> Filters:
 def write_intro(text: str, recs: list[Recommendation], client=None) -> str:
     listing = "\n".join(f"- {r.name}: {r.reason}" for r in recs)
     resp = _create(
-        client, model=MODEL, max_tokens=1000, output_config={"effort": "low"},
+        client, "intro", model=MODEL, max_tokens=1000, output_config={"effort": "low"},
         system=INTRO_SYSTEM,
         messages=[{"role": "user", "content": f"Petición: {text}\n\nJuegos:\n{listing}"}],
     )

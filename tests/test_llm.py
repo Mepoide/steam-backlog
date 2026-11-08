@@ -14,13 +14,14 @@ class FakeClient:
     def __init__(self, content=None, error=None):
         self.kwargs = None
         self._content, self._error = content or [], error
+        self._usage = None
         self.messages = SimpleNamespace(create=self._create)
 
     def _create(self, **kw):
         self.kwargs = kw
         if self._error:
             raise self._error
-        return SimpleNamespace(content=self._content, stop_reason="end_turn")
+        return SimpleNamespace(content=self._content, stop_reason="end_turn", usage=self._usage)
 
 
 def tool_use(inp):
@@ -89,3 +90,27 @@ def test_missing_api_key_raises_llmerror(monkeypatch):
         parse_request("x", KNOWN)
     with pytest.raises(LLMError):
         write_intro("x", [rec()])
+
+
+def test_each_call_records_real_usage():
+    import usage
+    c = FakeClient(tool_use({}))
+    c._usage = SimpleNamespace(input_tokens=3000, output_tokens=80)
+    parse_request("x", KNOWN, client=c)
+    write_intro("x", [rec()], client=FakeClient([SimpleNamespace(type="text", text="Hola.")]))
+    stats = usage.month_stats()
+    assert stats.calls == 2 and stats.input_tokens == 3000 and stats.output_tokens == 80
+    kinds = [line.split('"kind": "')[1].split('"')[0] for line in usage.PATH.read_text().splitlines()]
+    assert kinds == ["parse", "intro"]
+
+
+def test_budget_exhausted_blocks_calls(monkeypatch):
+    import usage
+    from llm import BudgetExceeded
+    monkeypatch.setenv("LLM_MONTHLY_BUDGET_USD", "0.01")
+    usage.record(usage.Usage(model=MODEL, kind="parse", output_tokens=20_000))  # 0.01 $
+    c = FakeClient(tool_use({}))
+    with pytest.raises(BudgetExceeded) as exc:
+        parse_request("x", KNOWN, client=c)
+    assert c.kwargs is None  # ni se llegó a llamar a la API
+    assert isinstance(exc.value, LLMError) and "0.01" in str(exc.value)
