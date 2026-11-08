@@ -6,8 +6,10 @@ import llm as real_llm
 from datetime import date
 
 from commands import (NO_DATA, Store, cmd_ayuda, cmd_buscar, cmd_coste, cmd_juego, cmd_marcar,
-                      cmd_recientes, cmd_recomienda, cmd_top, confirm_mark, find_games, free_text,
-                      parse_recomienda_args, render)
+                      cmd_mostrados, cmd_parecidos, cmd_recientes, cmd_recomienda, cmd_repasar,
+                      cmd_top, confirm_mark, confirm_marks, find_games, finish_review, free_text,
+                      parse_marks, parse_recomienda_args, plan_marks, render, review_step,
+                      start_review, started_pending)
 from conftest import make_backlog, make_game
 from library import read_backlog, write_backlog
 from recommender import Filters, Recommendation
@@ -163,9 +165,9 @@ def test_confirm_mark_missing_game(backlog_file):
 
 def fake_llm(filters=None, intro="Aquí tienes.", parse_error=False, intro_error=False, request=None,
              seen=None):
-    def parse_request(text, known_tags, previous=None):
+    def parse_request(text, known_tags, history=None):
         if seen is not None:
-            seen.append(previous)
+            seen.append(history)
         if parse_error:
             raise real_llm.LLMError("caído")
         return request or real_llm.Request(filters=filters or Filters())
@@ -211,7 +213,7 @@ def test_free_text_logs_llm_errors(caplog):
 
 
 def test_free_text_budget_exhausted_says_so():
-    def parse_request(text, known_tags, previous=None):
+    def parse_request(text, known_tags, history=None):
         raise real_llm.BudgetExceeded("presupuesto mensual de IA agotado (1.00 de 1.00 $)")
     fake = SimpleNamespace(parse_request=parse_request, write_intro=None, LLMError=real_llm.LLMError)
     reply = free_text(store(), "x", llm=fake)
@@ -285,10 +287,12 @@ def test_free_text_routes_game_and_recent_without_intro():
     assert r.text.startswith("Últimos juegos añadidos a tu biblioteca:\n1. Hades II")
 
 
-def test_free_text_passes_previous_message():
+def test_free_text_passes_history_with_shown_names():
     seen = []
-    free_text(store(), "¿y de rol?", llm=fake_llm(seen=seen), previous="algo corto")
-    assert seen == ["algo corto"]
+    history = [{"user": "/juego hades", "shown": [("5", "Hades"), ("6", "Hades II")]},
+               {"user": "algo corto", "shown": []}]
+    free_text(store(), "¿y de rol?", llm=fake_llm(seen=seen), history=history)
+    assert seen == [[real_llm.Turn("/juego hades", ["Hades", "Hades II"]), real_llm.Turn("algo corto")]]
 
 
 
@@ -296,3 +300,147 @@ def test_juego_suggests_marcar_for_started_pending_games():
     text = cmd_juego(store(), "hades ii").text
     assert "Sigue en «pendiente» y no te lo recomiendo: /marcar Hades II jugando" in text
     assert "/marcar" not in cmd_juego(store(), "celeste").text
+
+
+def test_find_games_tolerates_word_variants():
+    backlog = make_backlog(("1", "Sherlock Holmes Chapter One", "pendiente"),
+                           ("2", "Sherlock Holmes: The Devil's Daughter", "pendiente"))
+    assert [r["appid"] for r in find_games(backlog, "chapters one")] == ["1"]
+    assert [r["appid"] for r in find_games(backlog, "devils daughter")] == ["2"]
+
+
+def test_commands_report_shown_games():
+    assert [a for a, _ in cmd_juego(store(), "hades").shown] == ["5", "6"]
+    assert cmd_recomienda(store(), "").shown[0] == ("5", "Hades")
+    assert cmd_recientes(store(), 1).shown == [("6", "Hades II")]
+
+
+def test_mostrados_answers_where_games_come_from():
+    text = cmd_mostrados(store(), [("5", "Hades"), ("7", "Stardew Valley")]).text
+    assert text.splitlines() == [
+        "Sí, todos están en tu biblioteca:",
+        "1. Hades — biblioteca familiar, disponible desde 2021-07-01 · dura 24 h · sin jugar · pendiente",
+        "2. Stardew Valley — comprado el 2023-12-25 · dura 53 h · 1.0 h · pendiente",
+    ]
+    assert cmd_mostrados(store(), []).text.startswith("Aún no te he enseñado")
+
+
+def test_plan_marks_prefers_shown_games_and_builds_one_button():
+    shown = [("6", "Hades II")]
+    reply = plan_marks(store(), [("Hades", "terminado"), ("celeste", "abandonado"),
+                                 ("Portal 2", "terminado"), ("zzzz", "jugando")], shown)
+    assert reply.text.splitlines() == [
+        "¿Hago estos cambios?",
+        "• Hades II: pendiente → terminado",  # «Hades» se refería al mostrado
+        "• Celeste: pendiente → abandonado",
+        "No encuentro «zzzz» en el backlog.",
+    ]
+    assert reply.buttons == [("Sí", "marks:6=t,8=a"), ("Cancelar", "cancel")]
+    assert all(len(d.encode()) <= 64 for _, d in reply.buttons)
+    assert plan_marks(store(), [("Portal 2", "terminado")]).text.startswith("Ya estaban así")
+
+
+def test_parse_marks_new_and_old_formats():
+    assert parse_marks("marks:6=t,8=a,9=x") == [("6", "terminado"), ("8", "abandonado")]
+    assert parse_marks("mark:7:terminado") == [("7", "terminado")]
+
+
+def test_confirm_marks_writes_all_syncs_once_and_refreshes(backlog_file):
+    calls, refreshed = [], []
+    reply = confirm_marks([("6", "terminado"), ("8", "abandonado"), ("999", "jugando")],
+                          backlog_path=backlog_file,
+                          sync=lambda paths, msg: calls.append(msg) or True,
+                          refresh=lambda: refreshed.append(1))
+    assert reply.text == "✓ Marcados:\n• Hades II → terminado\n• Celeste → abandonado"
+    assert calls == ["backlog: Hades II → terminado, Celeste → abandonado"] and refreshed == [1]
+    estados = {r["appid"]: r["estado"] for r in read_backlog(backlog_file)}
+    assert estados["6"] == "terminado" and estados["8"] == "abandonado"
+
+
+def test_refresh_failure_does_not_break_marking(backlog_file):
+    def boom():
+        raise RuntimeError("sin datos")
+    reply = confirm_mark("7", "terminado", backlog_path=backlog_file, sync=lambda p, m: True, refresh=boom)
+    assert reply.text == "✓ «Stardew Valley» marcado como terminado."
+
+
+def test_parecidos():
+    s = store()
+    s.games["8"]["tags"] = {"Roguelike": 10, "Plataformas": 3}
+    reply = cmd_parecidos(s, "hades ii")
+    assert reply.text.startswith("Lo más parecido a Hades II que no has empezado:\n1. Hades")
+    assert "parecido a Hades II (comparten Roguelike)" in reply.text
+    assert "1. Hades II" not in reply.text
+    assert cmd_parecidos(s, "").text.startswith("Uso: /parecidos")
+    assert cmd_parecidos(s, "zzzz").text == "No encuentro «zzzz» en tu biblioteca."
+
+
+def started_store():
+    s = store()
+    s.library["7"]["hours"] = 5.0  # Stardew: empezado, jugado el 2024-01-02
+    s.library["8"].update(hours=3.0, last_played=date(2025, 6, 1))  # Celeste, más reciente
+    return s
+
+
+def test_started_pending_order_and_repasar():
+    s = started_store()
+    assert [r["appid"] for r in started_pending(s)] == ["6", "8", "7"]
+    reply = cmd_repasar(s, skip={"6"})
+    assert reply.text.startswith("Repaso de juegos empezados que siguen en pendiente (quedan 2)\n\nCeleste")
+    assert "/marcar" not in reply.text
+    assert reply.buttons[0] == ("Terminado", "rev:8:t") and reply.buttons[-1] == ("Parar", "rev:stop")
+    assert reply.columns == 3
+    assert cmd_repasar(s, skip={"6", "7", "8"}) is None
+
+
+def test_review_flow_marks_locally_and_syncs_once_at_the_end(backlog_file):
+    s, state, calls = started_store(), {}, []
+    sync = lambda paths, msg: calls.append(msg) or True
+
+    def load():
+        s.backlog = read_backlog(backlog_file)
+        return s
+
+    assert start_review(s, state).buttons[0] == ("Terminado", "rev:6:t")
+    nxt = review_step("rev:6:t", state, backlog_path=backlog_file, sync=sync, load=load)
+    assert "(quedan 2, llevas 1)" in nxt.text and calls == []
+    nxt = review_step("rev:8:s", state, backlog_path=backlog_file, sync=sync, load=load)
+    assert "Stardew Valley" in nxt.text
+    done = review_step("rev:7:a", state, backlog_path=backlog_file, sync=sync, load=load)
+    assert done.text == "Repaso terminado: 2 juegos actualizados."
+    assert calls == ["backlog: repaso (2 juegos)"]
+    estados = {r["appid"]: r["estado"] for r in read_backlog(backlog_file)}
+    assert (estados["6"], estados["7"], estados["8"]) == ("terminado", "abandonado", "pendiente")
+
+
+def test_review_stop_and_nothing_to_review():
+    state = {"review_done": []}
+    assert review_step("rev:stop", state, sync=lambda p, m: True).text.startswith(
+        "Repaso terminado; no has cambiado nada")
+    s = store()
+    assert start_review(Store(games={}, scores={}, backlog=s.backlog[-1:], library=s.library),
+                        {}).text.startswith("No tienes juegos empezados")
+
+
+def test_free_text_mark_uses_last_shown_games():
+    history = [{"user": "/juego hades", "shown": [("6", "Hades II")]}]
+    req = real_llm.Request(kind="mark", marks=[("Hades", "terminado")])
+    reply = free_text(store(), "me lo he pasado", llm=fake_llm(request=req), history=history)
+    assert reply.buttons[0] == ("Sí", "marks:6=t")
+
+
+def test_free_text_last_results():
+    history = [{"user": "rol", "shown": [("5", "Hades")]}, {"user": "gracias", "shown": []}]
+    reply = free_text(store(), "¿esos los tengo?", llm=fake_llm(request=real_llm.Request(kind="last")),
+                      history=history)
+    assert reply.text.startswith("Sí, todos están en tu biblioteca:\n1. Hades")
+
+
+def test_free_text_like_game():
+    s = store()
+    s.games["8"]["tags"] = {"Roguelike": 10}
+    req = real_llm.Request(filters=Filters(limit=1), game="Hades II")
+    reply = free_text(s, "algo como Hades II", llm=fake_llm(request=req))
+    assert "parecido a Hades II" in reply.text
+    reply = free_text(s, "algo como Zelda", llm=fake_llm(request=real_llm.Request(game="Zelda")))
+    assert reply.text.startswith("No encuentro «Zelda» en tu biblioteca; ")

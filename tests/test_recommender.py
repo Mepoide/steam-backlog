@@ -172,3 +172,14 @@ def test_games_matching_all_requested_tags_come_first():
     scores = {"accion": sc(0.9), "turnos": sc(0.3)}
     f = Filters(include_tags=["Rol", "Por turnos"])
     assert ids(recommend(f, games, scores, pending("accion", "turnos"))) == ["turnos", "accion"]
+
+
+def test_like_appid_ranks_by_similarity_and_explains():
+    games = {"ref": make_game("Ref", tags={"Rol": 10, "Por turnos": 8}),
+             "a": make_game("A", tags={"Rol": 10, "Por turnos": 9}),
+             "b": make_game("B", tags={"Deportes": 10, "Por turnos": 5}),
+             "c": make_game("C", tags={"Carreras": 10})}
+    scores = {"ref": sc(0.1), "a": sc(0.2), "b": sc(0.9, "x", "X"), "c": sc(0.95, "x", "X")}
+    recs = recommend(Filters(like_appid="ref", limit=3), games, scores, pending("ref", "a", "b", "c"))
+    assert ids(recs) == ["a", "b", "c"]  # «ref» no se recomienda a sí mismo
+    assert recs[0].reason == "parecido a Ref (comparten Rol, Por turnos)"

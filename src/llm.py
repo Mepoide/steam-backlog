@@ -16,6 +16,8 @@ log = logging.getLogger(__name__)
 MODEL = "claude-haiku-5-5"
 MAX_LIMIT = 5
 MAX_RECENT = 20
+MAX_MARKS = 5  # caben en el callback_data de un botón de Telegram (64 bytes)
+ESTADOS = ["pendiente", "jugando", "terminado", "abandonado", "descartado"]
 
 FILTERS_TOOL = {
     "name": "set_filters",
@@ -31,9 +33,38 @@ FILTERS_TOOL = {
                              "description": "Tags o géneros a evitar (de la lista conocida)."},
             "min_positive": {"type": "number", "description": "Fracción mínima de reseñas positivas, 0-1."},
             "limit": {"type": "integer", "description": "Número de juegos a recomendar, 1-5."},
+            "like_game": {"type": "string",
+                          "description": "Si pide juegos parecidos a uno concreto, su nombre."},
         },
         "additionalProperties": False,
     },
+}
+
+MARK_TOOL = {
+    "name": "mark_games",
+    "description": ("Cambiar el estado de juegos de su backlog cuando cuenta que los ha terminado, "
+                    "está con ellos, los dejó o no le interesan, o pide marcarlos."),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "games": {"type": "array", "items": {
+                "type": "object",
+                "properties": {"name": {"type": "string", "description": "Nombre del juego."},
+                               "estado": {"type": "string", "enum": ESTADOS}},
+                "required": ["name", "estado"],
+                "additionalProperties": False,
+            }},
+        },
+        "required": ["games"],
+        "additionalProperties": False,
+    },
+}
+
+LAST_TOOL = {
+    "name": "last_results",
+    "description": ("Preguntas sobre los juegos que el bot acaba de mostrar: si los tiene, si son "
+                    "propios o de la biblioteca familiar, cuánto duran, cuánto los ha jugado."),
+    "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
 }
 
 GAME_TOOL = {
@@ -63,17 +94,28 @@ PARSE_SYSTEM = """Atiendes a un jugador que pregunta por su biblioteca de Steam.
 Llama siempre a UNA herramienta:
 - game_info si pregunta por un juego concreto (cuánto lo ha jugado, qué tal es, cuánto dura...).
 - recent_games si pregunta qué ha comprado o se ha añadido hace poco a su biblioteca.
+- mark_games si cuenta cómo le va con juegos o pide marcarlos: terminado (se lo ha pasado),
+  jugando (está con él), abandonado (lo empezó y lo dejó o le aburre), descartado (no lo ha empezado
+  y no le interesa),
+  pendiente (aún quiere jugarlo). Incluye todos los que mencione, cada uno con su estado.
+- last_results si pregunta algo sobre los juegos que el bot acaba de mostrar
+  («¿esos los tengo?», «¿cuánto duran?», «¿cuáles son de la familiar?»).
 - set_filters para todo lo demás: qué jugar, recomendaciones, géneros, duraciones.
-Si te doy su mensaje anterior, úsalo para entender el actual: «¿y de estrategia?» sigue
+Te doy la conversación reciente para entender el mensaje actual: «¿y de estrategia?» sigue
 recomendando; si el actual aclara o corrige el anterior («fecha de compra me refiero» tras
 preguntar qué se ha añadido hace poco), mantén la misma herramienta que pedía el anterior.
+Si se refiere a juegos que mostró el bot («los dos últimos», «los que te he dicho»), usa sus
+nombres tal cual aparecen en «Bot mostró».
 Reglas de set_filters:
 - max_hours es la duración TOTAL del juego, no la de la sesión. Úsala solo si el usuario
   habla de juegos cortos o de terminar algo en poco tiempo.
+- like_game: si pide algo «parecido a», «como» o «del estilo de» un juego, pon su nombre.
 - Traduce lo que pide a tags usando SOLO esta lista (copia los nombres tal cual):
 {tags}
 - En include_tags pon de 1 a 3 tags, los más específicos que describan la petición
-  (p. ej. «tipo granja» → Agricultura, Simulador de vida; «tranquilo» → Relajantes, Acogedores).
+  (p. ej. «tipo granja» → Agricultura, Simulador de vida; «tranquilo» → Relajantes, Acogedores;
+  «rol por turnos» → Combate por turnos, Juegos de rol tácticos; mejor que Rol y Por turnos
+  sueltos, que también casan con estrategia).
   No añadas tags genéricos (Acción, Aventura, Casuales, Indie, Un jugador, Multijugador...)
   salvo que sean justo lo que pide: «con amigos» sí es Cooperativos en línea o Multijugador.
 - Lo que el usuario quiera evitar va en exclude_tags.
@@ -84,16 +126,25 @@ introducción de una o dos frases, cercana, a la lista de juegos que se va a mos
 debajo. La lista son recomendaciones de juegos que aún no ha empezado, elegidas por su
 gusto y los filtros de la petición: no digas que es otra cosa ni inventes datos sobre
 ellos. Si algún juego no encaja con lo pedido, dilo con naturalidad. No nombres ningún
-juego que no esté en la lista. Sin listas ni formato."""
+juego que no esté en la lista ni hables de lo que puedes o no puedes hacer. Sin listas
+ni formato."""
 
 
 @dataclass
 class Request:
-    """Lo que pide el usuario: recomendar (con filtros), la ficha de un juego o los recientes."""
-    kind: str = "recommend"  # "recommend" | "game" | "recent"
+    """Lo que pide el usuario: recomendar, una ficha, los recientes, marcar o la última lista."""
+    kind: str = "recommend"  # "recommend" | "game" | "recent" | "mark" | "last"
     filters: Filters = field(default_factory=Filters)
-    game: str = ""
+    game: str = ""  # ficha («game») o referencia de «parecido a» («recommend»)
     limit: int = 10
+    marks: list[tuple[str, str]] = field(default_factory=list)  # (nombre, estado)
+
+
+@dataclass
+class Turn:
+    """Un intercambio anterior: lo que escribió el usuario y los juegos que mostró el bot."""
+    user: str
+    shown: list[str] = field(default_factory=list)
 
 
 class LLMError(Exception):
@@ -145,20 +196,40 @@ def _filters(inp: dict, known_tags: list[str]) -> Filters:
     return f
 
 
-def _user_content(text: str, previous: str | None) -> str:
-    if not previous:
+def _user_content(text: str, history: list[Turn] | None) -> str:
+    if not history:
         return text
-    return f"Mensaje anterior (solo contexto): «{previous}»\nMensaje actual: {text}"
+    lines = ["Conversación reciente (solo contexto):"]
+    for t in history:
+        lines.append(f"Usuario: {t.user}")
+        if t.shown:
+            lines.append("Bot mostró: " + "; ".join(t.shown))
+    return "\n".join(lines) + f"\nMensaje actual: {text}"
 
 
-def parse_request(text: str, known_tags: list[str], client=None, previous: str | None = None) -> Request:
+def _marks(inp: dict) -> list[tuple[str, str]]:
+    out = []
+    for g in inp.get("games") or []:
+        if not isinstance(g, dict):
+            continue
+        name, estado = g.get("name"), g.get("estado")
+        if isinstance(name, str) and name.strip() and estado in ESTADOS:
+            out.append((name.strip(), estado))
+    return out[:MAX_MARKS]
+
+
+TOOLS = [FILTERS_TOOL, GAME_TOOL, RECENT_TOOL, MARK_TOOL, LAST_TOOL]
+
+
+def parse_request(text: str, known_tags: list[str], client=None,
+                  history: list[Turn] | None = None) -> Request:
     resp = _create(
         client, "parse", model=MODEL, max_tokens=1000,
         system=PARSE_SYSTEM.format(tags=", ".join(known_tags)),
-        tools=[FILTERS_TOOL, GAME_TOOL, RECENT_TOOL], tool_choice={"type": "any"},
-        messages=[{"role": "user", "content": _user_content(text, previous)}],
+        tools=TOOLS, tool_choice={"type": "any"},
+        messages=[{"role": "user", "content": _user_content(text, history)}],
     )
-    names = {FILTERS_TOOL["name"], GAME_TOOL["name"], RECENT_TOOL["name"]}
+    names = {t["name"] for t in TOOLS}
     call = next((b for b in resp.content if b.type == "tool_use" and b.name in names), None)
     if call is None:
         raise LLMError(f"sin llamada a herramienta (stop_reason={resp.stop_reason})")
@@ -168,7 +239,13 @@ def parse_request(text: str, known_tags: list[str], client=None, previous: str |
     if call.name == "recent_games":
         limit = inp.get("limit")
         return Request(kind="recent", limit=min(max(limit, 1), MAX_RECENT) if isinstance(limit, int) else 10)
-    return Request(filters=_filters(inp, known_tags))
+    if call.name == "mark_games" and _marks(inp):
+        return Request(kind="mark", marks=_marks(inp))
+    if call.name == "last_results":
+        return Request(kind="last")
+    like = inp.get("like_game")
+    return Request(filters=_filters(inp, known_tags),
+                   game=like.strip() if isinstance(like, str) else "")
 
 
 def write_intro(text: str, recs: list[Recommendation], client=None) -> str:

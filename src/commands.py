@@ -15,6 +15,8 @@ from recommender import (STARTED_HOURS, Filters, Recommendation, fold, netflix_r
 
 log = logging.getLogger(__name__)
 ESTADOS_TXT = "pendiente, jugando, terminado, abandonado, descartado"
+CODES = {"p": "pendiente", "j": "jugando", "t": "terminado", "a": "abandonado", "d": "descartado"}
+CODE_OF = {v: k for k, v in CODES.items()}  # en los botones: callback_data ≤ 64 bytes
 NO_DATA = "Aún no hay recomendaciones: ejecuta enrich.py y taste.py (o espera al job diario)."
 RECOMIENDA_LIMIT = 5
 
@@ -23,6 +25,12 @@ RECOMIENDA_LIMIT = 5
 class Reply:
     text: str
     buttons: list[tuple[str, str]] = field(default_factory=list)  # (etiqueta, callback_data)
+    shown: list[tuple[str, str]] = field(default_factory=list)  # (appid, nombre) mostrados
+    columns: int = 1  # botones por fila
+
+
+def _shown(recs: list[Recommendation]) -> list[tuple[str, str]]:
+    return [(r.appid, r.name) for r in recs]
 
 
 @dataclass
@@ -64,10 +72,13 @@ def cmd_ayuda() -> Reply:
         "   (la duración es la del juego completo, según HowLongToBeat)\n"
         "/buscar <texto> — busca en el backlog\n"
         "/juego <nombre> — ficha: horas jugadas, fechas, duración y reseñas\n"
+        "/parecidos <juego> — lo de tu backlog que más se le parece\n"
         "/recientes — lo último que ha llegado a tu biblioteca\n"
         f"/marcar <juego> <estado> — estados: {ESTADOS_TXT}\n"
+        "/repasar — clasifica con botones los juegos que empezaste y siguen en pendiente\n"
         "/coste — lo que lleva gastado la IA este mes\n\n"
-        "O escríbeme sin comando: «algo tranquilo, estoy quemado»."
+        "O escríbeme sin comando: «algo tranquilo, estoy quemado», «algo como Hades», "
+        "«me he pasado el Celeste»."
     )
 
 
@@ -75,7 +86,8 @@ def cmd_top(store: Store) -> Reply:
     rows = netflix_rows(store.games, store.scores, store.backlog)
     if not rows:
         return Reply(NO_DATA)
-    return Reply("\n\n".join(render(title, recs) for title, recs in rows))
+    return Reply("\n\n".join(render(title, recs) for title, recs in rows),
+                 shown=[s for _, recs in rows for s in _shown(recs)])
 
 
 def parse_recomienda_args(args: str) -> Filters:
@@ -94,7 +106,21 @@ def cmd_recomienda(store: Store, args: str) -> Reply:
     recs = recommend(parse_recomienda_args(args), store.games, store.scores, store.backlog)
     if not recs:
         return Reply("Nada encaja con esos filtros. Prueba con más horas o sin género.")
-    return Reply(render(None, recs))
+    return Reply(render(None, recs), shown=_shown(recs))
+
+
+def _words(s: str) -> list[str]:
+    return re.findall(r"\w+", fold(s))
+
+
+def _token_matches(backlog: list[dict], query: str) -> list[dict]:
+    """Cada palabra de la consulta se parece a una del nombre: «devils daughter» →
+    «Sherlock Holmes: The Devil's Daughter», «chapters one» → «... Chapter One»."""
+    qw = [w for w in _words(query) if len(w) >= 3]
+    if not qw:
+        return []
+    return [r for r in backlog
+            if all(difflib.get_close_matches(w, _words(r["name"]), n=1, cutoff=0.8) for w in qw)]
 
 
 def find_games(backlog: list[dict], query: str, n: int = 5) -> list[dict]:
@@ -107,6 +133,9 @@ def find_games(backlog: list[dict], query: str, n: int = 5) -> list[dict]:
     sub = [r for r in backlog if q in fold(r["name"])]
     if sub:
         return sub[:n]
+    words = _token_matches(backlog, query)
+    if words:
+        return words[:n]
     names = {fold(r["name"]): r for r in backlog}
     return [names[k] for k in difflib.get_close_matches(q, list(names), n=n, cutoff=0.6)]
 
@@ -124,7 +153,8 @@ def cmd_buscar(store: Store, args: str) -> Reply:
     rows = find_games(store.backlog, args, n=10)
     if not rows:
         return Reply(f"No encuentro «{args.strip()}» en el backlog.")
-    return Reply("\n".join(_entry_line(store, r) for r in rows))
+    return Reply("\n".join(_entry_line(store, r) for r in rows),
+                 shown=[(r["appid"], r["name"]) for r in rows])
 
 
 def _game_matches(backlog: list[dict], query: str, n: int = 3) -> list[dict]:
@@ -139,18 +169,22 @@ def _played(hours: float | None) -> str:
     return "sin jugar" if not hours else f"{hours:.1f} h"
 
 
-def _detail(store: Store, row: dict) -> str:
+def _origin(lib: dict) -> str:
+    acquired = lib.get("acquired")
+    if lib.get("source") == "compartido":
+        return "biblioteca familiar" + (f", disponible desde {acquired}" if acquired else "")
+    if lib:
+        return "comprado" + (f" el {acquired}" if acquired else "")
+    return ""
+
+
+def _detail(store: Store, row: dict, hint: bool = True) -> str:
     appid = row["appid"]
     g, lib = store.games.get(appid, {}), store.library.get(appid, {})
     lines = [f"{row['name']} — {row['estado']}"]
-    hours, last, acquired = lib.get("hours"), lib.get("last_played"), lib.get("acquired")
+    hours, last = lib.get("hours"), lib.get("last_played")
     played = (f"{hours:.1f} h jugadas" + (f" (última vez {last})" if last else "")) if hours else "Sin jugar"
-    if lib.get("source") == "compartido":
-        origin = "biblioteca familiar" + (f", disponible desde {acquired}" if acquired else "")
-    elif lib:
-        origin = "comprado" + (f" el {acquired}" if acquired else "")
-    else:
-        origin = ""
+    origin = _origin(lib)
     lines.append(played + (f" · {origin}" if origin else ""))
     if g.get("hltb_main"):
         extra = f" · {_hours(g['hltb_extra'])} h con extras" if g.get("hltb_extra") else ""
@@ -161,7 +195,7 @@ def _detail(store: Store, row: dict) -> str:
     tags = sorted((g.get("tags") or {}).items(), key=lambda kv: -kv[1])[:6]
     if tags:
         lines.append("Tags: " + ", ".join(t for t, _ in tags))
-    if row["estado"] == "pendiente" and (hours or 0) >= STARTED_HOURS:
+    if hint and row["estado"] == "pendiente" and (hours or 0) >= STARTED_HOURS:
         lines.append(f"Sigue en «pendiente» y no te lo recomiendo: /marcar {row['name']} jugando "
                      "(o terminado)")
     lines.append(f"https://store.steampowered.com/app/{appid}")
@@ -174,7 +208,40 @@ def cmd_juego(store: Store, args: str) -> Reply:
     rows = _game_matches(store.backlog, args)
     if not rows:
         return Reply(f"No encuentro «{args.strip()}» en tu biblioteca.")
-    return Reply("\n\n".join(_detail(store, r) for r in rows))
+    return Reply("\n\n".join(_detail(store, r) for r in rows),
+                 shown=[(r["appid"], r["name"]) for r in rows])
+
+
+def cmd_parecidos(store: Store, args: str) -> Reply:
+    if not args.strip():
+        return Reply("Uso: /parecidos <juego>, p. ej. /parecidos Baldur's Gate 3")
+    rows = _game_matches(store.backlog, args, n=1)
+    if not rows:
+        return Reply(f"No encuentro «{args.strip()}» en tu biblioteca.")
+    ref = rows[0]
+    recs = recommend(Filters(like_appid=ref["appid"], limit=RECOMIENDA_LIMIT),
+                     store.games, store.scores, store.backlog)
+    if not recs:
+        return Reply(f"No tengo nada sin empezar que se parezca a {ref['name']}.")
+    return Reply(render(f"Lo más parecido a {ref['name']} que no has empezado:", recs),
+                 shown=_shown(recs))
+
+
+def cmd_mostrados(store: Store, shown: list[tuple[str, str]]) -> Reply:
+    """«¿Esos los tengo?»: origen, duración y horas de lo último que se mostró."""
+    if not shown:
+        return Reply("Aún no te he enseñado ningún juego en esta conversación.")
+    estado = {r["appid"]: r["estado"] for r in store.backlog}
+    all_owned = all(a in store.library for a, _ in shown)
+    lines = ["Sí, todos están en tu biblioteca:" if all_owned else "Los que te acabo de enseñar:"]
+    for i, (appid, name) in enumerate(shown, 1):
+        lib, g = store.library.get(appid, {}), store.games.get(appid, {})
+        parts = [_origin(lib) or "no lo veo en tu biblioteca"]
+        if g.get("hltb_main"):
+            parts.append(f"dura {_hours(g['hltb_main'])} h")
+        parts += [_played(lib.get("hours")), estado.get(appid, "fuera del backlog")]
+        lines.append(f"{i}. {name} — " + " · ".join(parts))
+    return Reply("\n".join(lines), shown=shown)
 
 
 def cmd_recientes(store: Store, limit: int = 10) -> Reply:
@@ -188,7 +255,7 @@ def cmd_recientes(store: Store, limit: int = 10) -> Reply:
         origin = "familiar" if v.get("source") == "compartido" else "propio"
         lines.append(f"{i}. {v['name']} — {acq} · {origin} · {_played(v.get('hours'))} · "
                      f"{estado.get(appid, 'fuera del backlog')}")
-    return Reply("\n".join(lines))
+    return Reply("\n".join(lines), shown=[(appid, v["name"]) for _, appid, v in dated])
 
 
 def cmd_marcar(store: Store, args: str) -> Reply:
@@ -210,19 +277,145 @@ def cmd_marcar(store: Store, args: str) -> Reply:
                  [(r["name"], f"mark:{r['appid']}:{estado}") for r in found] + [cancel])
 
 
-def confirm_mark(appid: str, estado: str, backlog_path=BACKLOG_CSV,
-                 sync=git_sync.commit_and_push) -> Reply:
-    row = next((r for r in read_backlog(backlog_path) if r["appid"] == appid), None)
-    if row is None:
-        return Reply("Ese juego ya no está en el backlog.")
-    try:
+def _resolve(store: Store, name: str, shown: list[tuple[str, str]]) -> dict | None:
+    """Nombre que dio el LLM → fila del backlog, priorizando lo que se acaba de mostrar."""
+    q = fold(name)
+    by_id = {r["appid"]: r for r in store.backlog}
+    near = [a for a, n in shown if fold(n) == q] or [a for a, n in shown if q in fold(n)]
+    if len(near) == 1 and near[0] in by_id:
+        return by_id[near[0]]
+    found = _game_matches(store.backlog, name, n=1)
+    return found[0] if found else None
+
+
+def plan_marks(store: Store, marks: list[tuple[str, str]],
+               shown: list[tuple[str, str]] = ()) -> Reply:
+    """Cambios de estado pedidos en texto libre: se confirman con un único botón."""
+    changes, lines, missing = {}, [], []
+    for name, estado in marks:
+        row = _resolve(store, name, list(shown))
+        if row is None:
+            missing.append(name)
+        elif row["estado"] != estado and row["appid"] not in changes:
+            changes[row["appid"]] = estado
+            lines.append(f"• {row['name']}: {row['estado']} → {estado}")
+    notes = [f"No encuentro «{m}» en el backlog." for m in missing]
+    if not changes:
+        return Reply("\n".join(notes) or "Ya estaban así; no hay nada que cambiar.")
+    data = "marks:" + ",".join(f"{a}={CODE_OF[e]}" for a, e in changes.items())
+    return Reply("\n".join(["¿Hago estos cambios?", *lines, *notes]),
+                 [("Sí", data), ("Cancelar", "cancel")])
+
+
+def parse_marks(data: str) -> list[tuple[str, str]]:
+    """«marks:350640=t,1949030=a» (o el antiguo «mark:350640:terminado») → [(appid, estado)]."""
+    if data.startswith("mark:"):
+        _, appid, estado = (data.split(":", 2) + ["", ""])[:3]
+        return [(appid, estado)]
+    pairs = []
+    for item in data.removeprefix("marks:").split(","):
+        appid, _, code = item.partition("=")
+        if appid and code in CODES:
+            pairs.append((appid, CODES[code]))
+    return pairs
+
+
+def _sync_and_refresh(message: str, sync, refresh) -> str:
+    suffix = ""
+    if not sync(["backlog.csv"], message):
+        suffix = " (no se pudo subir a GitHub, queda en local)"
+    if refresh is not None:
+        try:
+            refresh()  # el perfil aprende de lo terminado y lo abandonado
+        except Exception:
+            log.exception("No se pudo recalcular el perfil")
+    return suffix
+
+
+def confirm_marks(pairs: list[tuple[str, str]], backlog_path=BACKLOG_CSV,
+                  sync=git_sync.commit_and_push, refresh=None) -> Reply:
+    names = {r["appid"]: r["name"] for r in read_backlog(backlog_path)}
+    done = []
+    for appid, estado in pairs:
+        if appid not in names or estado not in ESTADOS:
+            continue
         set_estado(appid, estado, backlog_path)
-    except ValueError:
+        done.append((names[appid], estado))
+    if not done:
+        return Reply("Ese juego ya no está en el backlog." if len(pairs) == 1
+                     else "No he podido marcar ninguno.")
+    if len(done) == 1:
+        text, msg = f"✓ «{done[0][0]}» marcado como {done[0][1]}.", f"backlog: {done[0][0]} → {done[0][1]}"
+    else:
+        text = "✓ Marcados:\n" + "\n".join(f"• {n} → {e}" for n, e in done)
+        msg = "backlog: " + ", ".join(f"{n} → {e}" for n, e in done)
+    return Reply(text + _sync_and_refresh(msg, sync, refresh))
+
+
+def confirm_mark(appid: str, estado: str, backlog_path=BACKLOG_CSV,
+                 sync=git_sync.commit_and_push, refresh=None) -> Reply:
+    if estado not in ESTADOS:
         return Reply(f"Estado no válido: «{estado}».")
-    text = f"✓ «{row['name']}» marcado como {estado}."
-    if not sync(["backlog.csv"], f"backlog: {row['name']} → {estado}"):
-        text += " (no se pudo subir a GitHub, queda en local)"
-    return Reply(text)
+    return confirm_marks([(appid, estado)], backlog_path, sync, refresh)
+
+
+def started_pending(store: Store) -> list[dict]:
+    """Juegos en «pendiente» que ya empezaste: lo jugado hace menos, primero."""
+    rows = [r for r in store.backlog if r["estado"] == "pendiente"
+            and (store.library.get(r["appid"], {}).get("hours") or 0) >= STARTED_HOURS]
+    def key(r):
+        lib = store.library[r["appid"]]
+        return (lib.get("last_played") is not None, lib.get("last_played") or "", lib["hours"])
+    return sorted(rows, key=key, reverse=True)
+
+
+REVIEW_BUTTONS = (("Terminado", "t"), ("Jugando", "j"), ("Abandonado", "a"),
+                  ("Descartado", "d"), ("Saltar", "s"))
+
+
+def cmd_repasar(store: Store, skip=frozenset(), done: int = 0) -> Reply | None:
+    """Siguiente juego del repaso, o None si no queda ninguno."""
+    rows = [r for r in started_pending(store) if r["appid"] not in skip]
+    if not rows:
+        return None
+    row = rows[0]
+    head = f"Repaso de juegos empezados que siguen en pendiente (quedan {len(rows)}"
+    head += f", llevas {done})" if done else ")"
+    buttons = [(label, f"rev:{row['appid']}:{code}") for label, code in REVIEW_BUTTONS]
+    return Reply(f"{head}\n\n{_detail(store, row, hint=False)}", buttons + [("Parar", "rev:stop")],
+                 shown=[(row["appid"], row["name"])], columns=3)
+
+
+def start_review(store: Store, state: dict) -> Reply:
+    state["review_skip"], state["review_done"] = set(), []
+    return cmd_repasar(store) or Reply("No tienes juegos empezados en «pendiente». Todo al día 👌")
+
+
+def finish_review(state: dict, sync=git_sync.commit_and_push, refresh=None) -> Reply:
+    done = state.get("review_done") or []
+    state["review_done"] = []
+    if not done:
+        return Reply("Repaso terminado; no has cambiado nada.")
+    text = f"Repaso terminado: {len(done)} juegos actualizados."
+    return Reply(text + _sync_and_refresh(f"backlog: repaso ({len(done)} juegos)", sync, refresh))
+
+
+def review_step(data: str, state: dict, backlog_path=BACKLOG_CSV, sync=git_sync.commit_and_push,
+                refresh=None, load=None) -> Reply:
+    """Botón del repaso: «rev:<appid>:<código>» marca (sin subir aún) o salta; «rev:stop» acaba.
+
+    Los cambios se suben a GitHub de una vez al terminar, no uno por botón."""
+    _, appid, code = (data.split(":", 2) + ["", ""])[:3]
+    if appid != "stop":
+        if code == "s":
+            state.setdefault("review_skip", set()).add(appid)
+        elif code in CODES and set_estado(appid, CODES[code], backlog_path):
+            state.setdefault("review_done", []).append(appid)
+        nxt = cmd_repasar((load or load_store)(), state.get("review_skip", set()),
+                          len(state.get("review_done") or []))
+        if nxt is not None:
+            return nxt
+    return finish_review(state, sync, refresh)
 
 
 def _k(n: int) -> str:
@@ -244,12 +437,21 @@ def cmd_coste(budget: float | None = None) -> Reply:
     return Reply("\n".join(lines))
 
 
-def free_text(store: Store, text: str, llm=llm_module, previous: str | None = None) -> Reply:
+def _turns(history: list[dict] | None) -> list:
+    return [llm_module.Turn(h["user"], [n for _, n in h.get("shown") or []]) for h in history or []]
+
+
+def _last_shown(history: list[dict] | None) -> list[tuple[str, str]]:
+    return next((list(h["shown"]) for h in reversed(history or []) if h.get("shown")), [])
+
+
+def free_text(store: Store, text: str, llm=llm_module, history: list[dict] | None = None) -> Reply:
+    """Texto libre. `history`: turnos anteriores, [{"user": texto, "shown": [(appid, nombre)]}]."""
     args = (store.games, store.scores, store.backlog)
     if not store.scores:
         return Reply(NO_DATA)  # sin datos no merece la pena gastar una llamada
     try:
-        request = llm.parse_request(text, top_tags(store.games), previous=previous)
+        request = llm.parse_request(text, top_tags(store.games), history=_turns(history))
     except llm.LLMError as e:
         log.warning("LLM (parse_request) falló: %s", e)
         recs = recommend(Filters(), *args)
@@ -257,25 +459,38 @@ def free_text(store: Store, text: str, llm=llm_module, previous: str | None = No
             return Reply(NO_DATA)
         why = ("Este mes ya se ha gastado el presupuesto de IA (/coste)"
                if isinstance(e, llm_module.BudgetExceeded) else "No he podido usar la IA ahora mismo")
-        return Reply(f"{why}; aquí van tus recomendaciones de siempre:\n\n" + render(None, recs))
+        return Reply(f"{why}; aquí van tus recomendaciones de siempre:\n\n" + render(None, recs),
+                     shown=_shown(recs))
     if request.kind == "game":
         log.info("Texto libre «%s» → ficha de «%s»", text, request.game)
         return cmd_juego(store, request.game)
     if request.kind == "recent":
         log.info("Texto libre «%s» → recientes (%d)", text, request.limit)
         return cmd_recientes(store, request.limit)
-    filters = request.filters
+    if request.kind == "mark":
+        log.info("Texto libre «%s» → marcar %s", text, request.marks)
+        return plan_marks(store, request.marks, _last_shown(history))
+    if request.kind == "last":
+        log.info("Texto libre «%s» → lo mostrado antes", text)
+        return cmd_mostrados(store, _last_shown(history))
+    filters, note = request.filters, ""
+    if request.game:
+        ref = _resolve(store, request.game, _last_shown(history))
+        if ref is None:
+            note = f"No encuentro «{request.game}» en tu biblioteca; "
+        else:
+            filters.like_appid = ref["appid"]
     recs = recommend(filters, *args)
     log.info("Texto libre «%s» → %s → %s", text, filters, [r.name for r in recs])
     if not recs:
         recs = recommend(Filters(limit=filters.limit), *args)
         if not recs:
             return Reply(NO_DATA)
-        return Reply("No he encontrado nada exacto; esto es lo que más te encaja en general:\n\n"
-                     + render(None, recs))
+        return Reply(f"{note}No he encontrado nada exacto; esto es lo que más te encaja en general:\n\n"
+                     + render(None, recs), shown=_shown(recs))
     try:
         intro = llm.write_intro(text, recs)
     except llm.LLMError as e:
         log.warning("LLM (write_intro) falló: %s", e)
-        return Reply(render(None, recs))
-    return Reply(f"{intro}\n\n{render(None, recs)}")
+        return Reply(note + render(None, recs), shown=_shown(recs))
+    return Reply(f"{note}{intro}\n\n{render(None, recs)}", shown=_shown(recs))
