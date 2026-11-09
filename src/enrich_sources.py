@@ -18,6 +18,12 @@ STORE_URL = "https://store.steampowered.com/api/appdetails?appids={appid}&l=span
 ITEMS_URL = "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/?input_json={q}"
 TAGLIST_URL = "https://api.steampowered.com/IStoreService/GetTagList/v1/?language=spanish"
 ITEMS_TAG_COUNT = 20
+ASSETS_CDN = "https://shared.akamai.steamstatic.com/store_item_assets/"
+ICON_CDN = "https://shared.akamai.steamstatic.com/community_assets/images/apps/{appid}/{icon}.jpg"
+# Nombre que usamos → campo de `assets` en GetItems. Tamaños: header 460×215,
+# capsule 616×353, small 231×87, portrait 600×900 (biblioteca), hero 1920×620.
+ASSET_FIELDS = {"header": "header", "capsule": "main_capsule", "small": "small_capsule",
+                "portrait": "library_capsule", "hero": "library_hero"}
 
 
 class SourceError(Exception):
@@ -82,12 +88,25 @@ def parse_tag_list(payload: dict) -> dict[int, str]:
         raise SourceError("GetTagList inesperado") from e
 
 
+def parse_assets(item: dict) -> dict[str, str]:
+    """URLs absolutas de las imágenes de la tienda (cabecera, cápsulas, portada, hero, icono)."""
+    assets = item.get("assets") or {}
+    fmt, out = assets.get("asset_url_format"), {}
+    if fmt and "${FILENAME}" in fmt:
+        for name, field in ASSET_FIELDS.items():
+            if assets.get(field):
+                out[name] = ASSETS_CDN + fmt.replace("${FILENAME}", assets[field])
+    if assets.get("community_icon") and item.get("appid"):
+        out["icon"] = ICON_CDN.format(appid=item["appid"], icon=assets["community_icon"])
+    return out
+
+
 def parse_items(payload: dict, tag_names: dict[int, str]) -> dict:
     try:
         item = payload["response"]["store_items"][0]
     except (KeyError, IndexError, TypeError) as e:
         raise SourceError("GetItems inesperado") from e
-    out = {"tags": {}, "reviews_positive": None, "reviews_total": None}
+    out = {"tags": {}, "reviews_positive": None, "reviews_total": None, "images": {}}
     if item.get("success") != 1:
         return out  # appid inexistente o retirado: no es un fallo reintentable
     for t in item.get("tags") or []:
@@ -99,6 +118,7 @@ def parse_items(payload: dict, tag_names: dict[int, str]) -> dict:
         total = int(summary["review_count"])
         out["reviews_total"] = total
         out["reviews_positive"] = round(total * int(summary.get("percent_positive", 0)) / 100)
+    out["images"] = parse_assets(item)
     return out
 
 
@@ -128,7 +148,8 @@ def fetch_items(appid: str, name: str) -> dict:
     q = json.dumps({
         "ids": [{"appid": int(appid)}],
         "context": {"language": "spanish", "country_code": "ES"},
-        "data_request": {"include_tag_count": ITEMS_TAG_COUNT, "include_reviews": True},
+        "data_request": {"include_tag_count": ITEMS_TAG_COUNT, "include_reviews": True,
+                         "include_assets": True},
     }, separators=(",", ":"))
     url = ITEMS_URL.format(q=urllib.parse.quote(q))
     return parse_items(_get_json(url, _STEAM_API), _tag_names())

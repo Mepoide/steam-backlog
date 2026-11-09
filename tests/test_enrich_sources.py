@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from enrich_sources import (SourceError, clean_name, parse_items, parse_store, parse_tag_list,
+from enrich_sources import (SourceError, clean_name, parse_assets, parse_items, parse_store, parse_tag_list,
                             pick_hltb)
 
 FIX = Path(__file__).parent / "fixtures"
@@ -53,12 +53,14 @@ def test_parse_items_skips_unknown_tagids():
 
 def test_parse_items_without_tags_or_reviews():
     payload = {"response": {"store_items": [{"success": 1}]}}
-    assert parse_items(payload, {}) == {"tags": {}, "reviews_positive": None, "reviews_total": None}
+    assert parse_items(payload, {}) == {"tags": {}, "reviews_positive": None, "reviews_total": None,
+                                        "images": {}}
 
 
 def test_parse_items_not_found_is_empty_not_error():
     payload = {"response": {"store_items": [{"id": 1, "success": 2}]}}
-    assert parse_items(payload, {}) == {"tags": {}, "reviews_positive": None, "reviews_total": None}
+    assert parse_items(payload, {}) == {"tags": {}, "reviews_positive": None, "reviews_total": None,
+                                        "images": {}}
 
 
 def test_parse_items_bad_payload_raises():
@@ -117,3 +119,17 @@ def test_fetch_hltb_failed_request_raises(monkeypatch):
     monkeypatch.setattr(enrich_sources._HLTB, "interval", 0)
     with pytest.raises(SourceError):
         enrich_sources.fetch_hltb("1", "x")
+
+
+def test_parse_assets_builds_cdn_urls():
+    item = {"appid": 1145360, "assets": {
+        "asset_url_format": "steam/apps/1145360/${FILENAME}?t=1758127023",
+        "header": "header.jpg", "main_capsule": "capsule_616x353.jpg", "library_capsule": "library_600x900.jpg",
+        "community_icon": "8a3f"}}
+    got = parse_assets(item)
+    base = "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/1145360/"
+    assert got["header"] == base + "header.jpg?t=1758127023"
+    assert got["portrait"] == base + "library_600x900.jpg?t=1758127023"
+    assert got["icon"] == ("https://shared.akamai.steamstatic.com/community_assets/images/apps/"
+                           "1145360/8a3f.jpg")
+    assert "hero" not in got and parse_assets({}) == {}

@@ -124,3 +124,78 @@ def test_callback_reply_routes(monkeypatch):
     assert callback_reply("marks:", {}).text == "Botón no válido."
     assert callback_reply("rev:6:t", {}).text == "rev:6:t"
     assert callback_reply("cancel", {}).text == "Cancelado."
+
+
+class FakeBot:
+    def __init__(self, fail_photos=False):
+        self.sent, self.fail_photos = [], fail_photos
+
+    async def send_photo(self, chat_id, photo, caption=None, reply_markup=None):
+        if self.fail_photos:
+            from telegram.error import BadRequest
+            raise BadRequest("wrong file identifier")
+        self.sent.append(("photo", photo, caption, reply_markup is not None))
+
+    async def send_media_group(self, chat_id, media):
+        self.sent.append(("album", [m.media for m in media], [m.caption for m in media]))
+
+    async def send_message(self, chat_id, text, reply_markup=None, link_preview_options=None):
+        self.sent.append(("text", text, reply_markup is not None))
+
+
+class FakeMessage:
+    def __init__(self, photo=False, edit_error=None):
+        from types import SimpleNamespace
+        self.photo = ("p",) if photo else ()
+        self.chat = SimpleNamespace(id=42)
+        self.calls, self.edit_error = [], edit_error
+
+    async def edit_media(self, media, reply_markup=None):
+        if self.edit_error:
+            raise self.edit_error
+        self.calls.append(("edit_media", media.media, media.caption))
+
+    async def edit_text(self, text, reply_markup=None, link_preview_options=None):
+        if self.edit_error:
+            raise self.edit_error
+        self.calls.append(("edit_text", text))
+
+    async def delete(self):
+        self.calls.append(("delete",))
+
+
+def test_deliver_single_photo_with_caption_album_and_fallback():
+    import asyncio
+    from bot import deliver
+    from commands import Reply
+    b = FakeBot()
+    asyncio.run(deliver(b, 42, Reply("ficha", [("Sí", "x")], photos=[("u1", "Hades")])))
+    assert b.sent == [("photo", "u1", "ficha", True)]
+    b = FakeBot()
+    asyncio.run(deliver(b, 42, Reply("lista", photos=[("u1", "1. A"), ("u2", "2. B")])))
+    assert b.sent == [("album", ["u1", "u2"], ["1. A", "2. B"]), ("text", "lista", False)]
+    b = FakeBot()
+    asyncio.run(deliver(b, 42, Reply("x" * 2000, photos=[("u1", "Hades")])))
+    assert b.sent[0] == ("photo", "u1", "Hades", False) and b.sent[1][0] == "text"
+    b = FakeBot(fail_photos=True)
+    asyncio.run(deliver(b, 42, Reply("ficha", photos=[("u1", "Hades")])))
+    assert b.sent == [("text", "ficha", False)]
+
+
+def test_replace_edits_in_place_or_resends():
+    import asyncio
+    from telegram.error import BadRequest
+    from bot import replace
+    from commands import Reply
+    m, b = FakeMessage(photo=True), FakeBot()
+    asyncio.run(replace(b, m, Reply("siguiente", photos=[("u2", "B")])))
+    assert m.calls == [("edit_media", "u2", "siguiente")] and b.sent == []
+    m, b = FakeMessage(photo=True), FakeBot()  # fin del repaso: de foto a texto
+    asyncio.run(replace(b, m, Reply("Repaso terminado")))
+    assert m.calls == [("delete",)] and b.sent == [("text", "Repaso terminado", False)]
+    m, b = FakeMessage(), FakeBot()
+    asyncio.run(replace(b, m, Reply("✓ marcado")))
+    assert m.calls == [("edit_text", "✓ marcado")]
+    m, b = FakeMessage(edit_error=BadRequest("Message is not modified")), FakeBot()
+    asyncio.run(replace(b, m, Reply("igual")))
+    assert m.calls == [] and b.sent == []

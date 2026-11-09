@@ -21,7 +21,7 @@ from library import atomic_write_json
 SOURCES = ("store", "items", "hltb")
 EMPTY = {
     "genres": [], "categories": [], "metacritic": None,
-    "tags": {}, "reviews_positive": None, "reviews_total": None,
+    "tags": {}, "reviews_positive": None, "reviews_total": None, "images": {},
     "hltb_main": None, "hltb_extra": None,
 }
 
@@ -40,6 +40,8 @@ def enrich_all(games: dict[str, str], cache: dict,
         entry = cache.get(appid)
         if entry is not None:
             entry["name"] = name
+            if "images" not in entry and "items" not in entry["missing"]:
+                entry["missing"].append("items")  # cachés de antes de las imágenes: se completan
         needs_work = entry is None or refresh or bool(entry["missing"])
         if not needs_work:
             continue

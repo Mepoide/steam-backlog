@@ -104,13 +104,22 @@ Comandos:
   pasado el Awakened, el Chapter One me aburre» → cambios de estado con un
   botón para confirmar) o qué jugar («algo tranquilo, estoy quemado», «rol por
   turnos parecido al Baldur's Gate 3» → filtros, el recomendador elige y Claude
-  escribe una frase de introducción). Claude nunca elige los juegos. Recuerda
+  escribe una frase de introducción). También entiende «dame sus estados» o
+  «¿cómo tengo los de Sherlock?», «de la biblioteca familiar», «el mejor valorado»,
+  «lo más corto», «hola» o «cuánto llevo gastado». Claude nunca elige los juegos. Recuerda
   los 3 últimos turnos y los juegos que mostró en cada uno, así que entiende
   «¿y de estrategia?», «los dos últimos» o «márcalos».
 - No se recomiendan juegos con 2 h o más jugadas aunque sigan en «pendiente»
   (el backlog nace con todo en «pendiente»; márcalos con `/marcar` cuando quieras). Con tags pedidos, el orden mezcla tu gusto con
   cuánto pesa cada tag en el juego, así que «tipo granja» no saca un juego que
   solo es un poco «Casual».
+
+Las respuestas llevan imágenes de la tienda de Steam: álbum de cabeceras con las
+recomendaciones, la cabecera con la ficha de `/juego` y el repaso con la imagen
+de cada juego, que cambia en el mismo mensaje al pulsar los botones. Los estados
+llevan emoji (⏳ 🎮 ✅ 💤 🚫). El job diario descarga además las imágenes a
+`data/images/` para la futura web (`src/images.py`). Si el token de la biblioteca
+familiar caduca, el job te avisa por Telegram con cómo renovarlo.
 
 El bot usa long polling: no hace falta abrir puertos ni exponer nada. Al
 arrancar publica su menú de comandos; la foto de perfil se pone una vez con

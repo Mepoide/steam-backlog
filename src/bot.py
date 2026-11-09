@@ -10,9 +10,9 @@ import asyncio
 import logging
 import os
 
-from telegram import (BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions,
-                      Update)
-from telegram.error import BadRequest, NetworkError
+from telegram import (BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto,
+                      LinkPreviewOptions, Update)
+from telegram.error import BadRequest, NetworkError, TelegramError
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ContextTypes,
                           MessageHandler, filters)
 
@@ -23,6 +23,7 @@ from config import load_env, require_env
 log = logging.getLogger("bot")
 ERROR_TEXT = "Algo ha fallado; mira el log del bot."
 MAX_MESSAGE = 4096
+CAPTION_MAX = 1024  # pie de foto: si el texto cabe, va con la imagen en un solo mensaje
 NO_PREVIEW = LinkPreviewOptions(is_disabled=True)
 SETUP_CHAT_ID = 0  # ningún chat de Telegram tiene id 0: modo configuración, no responde a nadie
 HISTORY = 3  # turnos que recuerda para entender «¿y esos?» o «márcalos»
@@ -61,14 +62,60 @@ async def _compute(fn) -> commands.Reply:
         return commands.Reply(ERROR_TEXT)
 
 
+async def deliver(bot, chat_id: int, reply: commands.Reply) -> None:
+    """Envía la respuesta con sus imágenes.
+
+    Una imagen y texto corto → foto con el texto de pie (y sus botones). Varias → álbum
+    con «1. Nombre» de pie y después el texto. Si Telegram rechaza las imágenes, va
+    solo el texto: las imágenes adornan, nunca impiden responder."""
+    text, markup = reply.text[:MAX_MESSAGE], _markup(reply)
+    photos = reply.photos[:commands.MAX_PHOTOS]
+    try:
+        if len(photos) == 1 and len(reply.text) <= CAPTION_MAX:
+            await bot.send_photo(chat_id, photos[0][0], caption=reply.text, reply_markup=markup)
+            return
+        if len(photos) == 1:
+            await bot.send_photo(chat_id, photos[0][0], caption=photos[0][1])
+        elif photos:
+            await bot.send_media_group(chat_id, [InputMediaPhoto(url, caption=cap) for url, cap in photos])
+    except TelegramError as e:
+        log.warning("No se pudieron enviar las imágenes (%s); va solo el texto", e)
+    await bot.send_message(chat_id, text, reply_markup=markup, link_preview_options=NO_PREVIEW)
+
+
+async def replace(bot, message, reply: commands.Reply) -> None:
+    """Sustituye el mensaje de un botón (repaso, confirmación) por la nueva respuesta.
+
+    Foto → foto se edita en sitio (el repaso cambia de juego sin llenar el chat); si
+    cambia el tipo (foto ↔ texto) o la edición falla, se borra y se envía de nuevo."""
+    markup = _markup(reply)
+    photo = reply.photos[0][0] if reply.photos and len(reply.text) <= CAPTION_MAX else None
+    try:
+        if photo and message.photo:
+            await message.edit_media(InputMediaPhoto(photo, caption=reply.text), reply_markup=markup)
+            return
+        if not photo and not message.photo:
+            await message.edit_text(reply.text[:MAX_MESSAGE], reply_markup=markup,
+                                    link_preview_options=NO_PREVIEW)
+            return
+    except BadRequest as e:
+        if "not modified" in str(e).lower():  # doble toque en el mismo botón
+            return
+        log.warning("No se pudo editar el mensaje (%s); lo envío de nuevo", e)
+    try:
+        await message.delete()
+    except TelegramError:
+        pass
+    await deliver(bot, message.chat.id, reply)
+
+
 async def _send(update: Update, fn, context: ContextTypes.DEFAULT_TYPE | None = None) -> None:
     text = update.effective_message.text or ""
     log.info("Mensaje: %s", text or "(sin texto)")
     reply = await _compute(fn)
     if context is not None:
         remember(context.chat_data, text, reply)
-    await update.effective_message.reply_text(reply.text[:MAX_MESSAGE], reply_markup=_markup(reply),
-                                              link_preview_options=NO_PREVIEW)
+    await deliver(update.get_bot(), update.effective_chat.id, reply)
 
 
 def _args(context: ContextTypes.DEFAULT_TYPE) -> str:
@@ -159,12 +206,7 @@ def _on_callback(allowed_chat_id: int):
         if reply.shown and not reply.buttons:
             # Fin de un repaso o marcado confirmado: «¿y sus estados?» debe saber de qué juegos hablamos.
             remember(context.chat_data, "(pulsó un botón)", reply)
-        try:
-            await query.edit_message_text(reply.text[:MAX_MESSAGE], reply_markup=_markup(reply),
-                                          link_preview_options=NO_PREVIEW)
-        except BadRequest as e:
-            if "not modified" not in str(e).lower():  # doble toque en el mismo botón
-                raise
+        await replace(context.bot, query.message, reply)
     return handler
 
 
