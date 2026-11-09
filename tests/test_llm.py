@@ -52,14 +52,14 @@ def test_parse_request_forces_a_tool_and_model():
     assert c.kwargs["model"] == MODEL
     assert c.kwargs["tool_choice"] == {"type": "any"}
     assert [t["name"] for t in c.kwargs["tools"]] == ["set_filters", "game_info", "recent_games",
-                                                      "mark_games", "last_results"]
+                                                      "mark_games", "last_results", "review_games"]
     assert "Relajantes" in c.kwargs["system"]
     assert c.kwargs["messages"][0]["content"] == "x"
 
 
 def test_parse_request_game_info():
-    c = FakeClient(tool_use({"name": " Hades "}, name="game_info"))
-    assert parse_request("cuánto he jugado al Hades", KNOWN, client=c) == Request(kind="game", game="Hades")
+    c = FakeClient(tool_use({"names": [" Hades ", "", "Celeste"]}, name="game_info"))
+    assert parse_request("Hades y Celeste", KNOWN, client=c) == Request(kind="game", games=["Hades", "Celeste"])
 
 
 def test_parse_request_recent_games_clamps_limit():
@@ -70,7 +70,7 @@ def test_parse_request_recent_games_clamps_limit():
 
 
 def test_parse_request_game_info_without_name_falls_back_to_recommend():
-    got = parse_request("x", KNOWN, client=FakeClient(tool_use({"name": " "}, name="game_info")))
+    got = parse_request("x", KNOWN, client=FakeClient(tool_use({"names": [" "]}, name="game_info")))
     assert got.kind == "recommend"
 
 
@@ -178,3 +178,10 @@ def test_budget_exhausted_blocks_calls(monkeypatch):
 def test_write_intro_drops_repeated_bullet_list():
     c = FakeClient([SimpleNamespace(type="text", text="Tres de rol para ti.\n\n- Mount & Blade\n2. Otro")])
     assert write_intro("rol", [rec()], client=c) == "Tres de rol para ti."
+
+
+def test_parse_request_review_games():
+    got = parse_request("repasemos los de sherlock", KNOWN,
+                        client=FakeClient(tool_use({"query": " sherlock holmes "}, name="review_games")))
+    assert got == Request(kind="review", game="sherlock holmes")
+    assert parse_request("x", KNOWN, client=FakeClient(tool_use({}, name="review_games"))).game == ""

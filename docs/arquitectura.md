@@ -267,7 +267,7 @@ sequenceDiagram
     B->>C: texto + historial (3 turnos y juegos mostrados)
     C->>L: parse_request(texto, tags conocidos, historial)
     L->>L: ¿queda presupuesto?
-    L->>A: system (reglas + 331 tags) + 5 herramientas, tool_choice=any
+    L->>A: system (reglas + 331 tags) + 6 herramientas, tool_choice=any
     A-->>L: set_filters{include_tags, like_game:"Baldur's Gate 3"}
     L-->>C: Request(kind=recommend, filters, game)
     C->>C: resuelve «Baldur's Gate 3» → appid
@@ -412,12 +412,13 @@ el juego de referencia.
 ### 3.6 Texto libre con Claude (`llm.py`)
 
 Se hace una llamada de **parseo** con `tool_choice: any`, que obliga a usar una
-herramienta y no a contestar en prosa:
+de las seis herramientas y no a contestar en prosa:
 
 | Herramienta | Cuándo | Resultado |
 |---|---|---|
 | `set_filters` | Qué jugar, géneros, duración, «parecido a X» | `Request(kind="recommend", filters, game=X)` |
-| `game_info` | Pregunta por un juego concreto | ficha |
+| `game_info` | Pregunta por uno o varios juegos concretos | una ficha por juego (hasta 5) |
+| `review_games` | «Repasemos los de Sherlock Holmes» | repaso con botones, filtrado por nombre |
 | `recent_games` | Qué ha llegado a la biblioteca hace poco | lista por fecha de adquisición |
 | `mark_games` | «Me he pasado X», «Y me aburre», «márcalos» | cambios de estado que se confirman con un botón |
 | `last_results` | «¿Esos los tengo?», «¿cuánto duran?» | origen, duración y horas de lo último mostrado |
@@ -456,7 +457,9 @@ Se aplica en orden y se para en el primer paso que encuentra algo:
 
 - **Qué entra.** Juegos en `pendiente` con 2 h o más jugadas. Primero los
   jugados más recientemente, que son los más fáciles de recordar; en caso de
-  empate, los de más horas.
+  empate, los de más horas. Con un nombre o saga (`/repasar sherlock holmes` o
+  la herramienta `review_games`) entran todos los pendientes que casen,
+  empezados o no.
 - **Cómo se clasifican.** Cada botón (Terminado, Jugando, Abandonado,
   Descartado, Saltar) escribe en local y pasa al siguiente editando el mismo
   mensaje.
@@ -490,7 +493,7 @@ Se aplica en orden y se para en el primer paso que encuentra algo:
 
 | Fallo | Comportamiento |
 |---|---|
-| Caduca el token de la familiar | El export sigue solo con los juegos propios; las horas de los compartidos se mantienen gracias a `playtime_cache.json` |
+| Caduca el token de la familiar (401) | El export conserva del export anterior los juegos compartidos y las fechas de compra, que solo da esa API. Las horas de los compartidos se quedan como estaban hasta renovar el token |
 | Una fuente del enriquecimiento cae o devuelve 429 | La fuente queda en `missing` y se reintenta al día siguiente |
 | Claude no responde, no hay clave o se agota el presupuesto | Recomendaciones «Para ti» con un aviso. Los comandos con `/` no se ven afectados |
 | Falla solo la intro | Se envía la lista sin la frase |

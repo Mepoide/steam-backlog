@@ -102,6 +102,35 @@ def shared_games(token, steamid):
     return out
 
 
+def read_previous(csv_path):
+    if not Path(csv_path).exists():
+        return []
+    with open(csv_path, newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+def keep_previous(lib, previous):
+    """Sin biblioteca compartida (token caducado), no se pierde lo que ya se sabía.
+
+    Los juegos que solo venían de la API familiar se conservan del export anterior
+    (con sus horas de entonces) y los propios recuperan la fecha de adquisición y
+    los dueños, que solo da esa API. Devuelve cuántos juegos se han conservado.
+    """
+    kept = 0
+    for row in previous:
+        appid = row.get("appid")
+        if not appid:
+            continue
+        if appid in lib:
+            for field in ("acquired", "owners"):
+                if not lib[appid].get(field) and row.get(field):
+                    lib[appid][field] = row[field]
+        else:
+            lib[appid] = row
+            kept += 1
+    return kept
+
+
 def setting(name, prompt, secret=True, required=True):
     """Lee la variable del entorno; solo pregunta por consola si hay terminal."""
     value = os.environ.get(name, "").strip()
@@ -123,14 +152,17 @@ def main():
         print("  ⚠ Sin STEAM_WEBAPI_TOKEN: omito la biblioteca compartida.")
 
     print("→ Juegos propios…")
-    lib = owned_games(key, steamid)
+    lib = {str(k): v for k, v in owned_games(key, steamid).items()}
     print(f"  {len(lib)} juegos")
+    csv_path = RAW_DIR / "steam_library.csv"
+    shared_ok = False
 
     if token:
         print("→ Biblioteca compartida…")
         try:
-            shared = shared_games(token, steamid)
+            shared = {str(k): v for k, v in shared_games(token, steamid).items()}
             print(f"  {len(shared)} apps en el grupo familiar")
+            shared_ok = bool(shared)
             for appid, s in shared.items():
                 if appid in lib:
                     # Conserva horas exactas de GetOwnedGames, añade fecha de adquisición/dueños
@@ -139,14 +171,18 @@ def main():
                 else:
                     lib[appid] = s
         except Exception as e:
-            print(f"  ⚠ Falló la biblioteca compartida ({e}). Sigo solo con los propios.")
+            print(f"  ⚠ Falló la biblioteca compartida ({e}). ¿Caducó STEAM_WEBAPI_TOKEN?")
+
+    if not shared_ok:
+        kept = keep_previous(lib, read_previous(csv_path))
+        if kept:
+            print(f"  ↺ Conservo {kept} juegos y las fechas de compra del export anterior.")
 
     rows = sorted(lib.values(), key=lambda r: r["name"].lower())
     fields = ["appid", "name", "source", "playtime_hours", "playtime_2weeks_hours",
               "last_played", "acquired", "owners", "excluded_reason"]
 
     RAW_DIR.mkdir(parents=True, exist_ok=True)
-    csv_path = RAW_DIR / "steam_library.csv"
     json_path = RAW_DIR / "steam_library.json"
 
     with open(csv_path, "w", newline="", encoding="utf-8") as f:

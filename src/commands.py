@@ -75,7 +75,8 @@ def cmd_ayuda() -> Reply:
         "/parecidos <juego> — lo de tu backlog que más se le parece\n"
         "/recientes — lo último que ha llegado a tu biblioteca\n"
         f"/marcar <juego> <estado> — estados: {ESTADOS_TXT}\n"
-        "/repasar — clasifica con botones los juegos que empezaste y siguen en pendiente\n"
+        "/repasar [nombre] — clasifica con botones los juegos que empezaste y siguen en pendiente "
+        "(o solo los de un nombre o saga)\n"
         "/coste — lo que lleva gastado la IA este mes\n\n"
         "O escríbeme sin comando: «algo tranquilo, estoy quemado», «algo como Hades», "
         "«me he pasado el Celeste»."
@@ -210,6 +211,21 @@ def cmd_juego(store: Store, args: str) -> Reply:
         return Reply(f"No encuentro «{args.strip()}» en tu biblioteca.")
     return Reply("\n\n".join(_detail(store, r) for r in rows),
                  shown=[(r["appid"], r["name"]) for r in rows])
+
+
+def cmd_juegos(store: Store, names: list[str], shown: list[tuple[str, str]] = ()) -> Reply:
+    """Fichas de varios juegos nombrados («awakened, chapter one y devils daughter»)."""
+    if len(names) == 1:
+        return cmd_juego(store, names[0])
+    rows, missing = [], []
+    for name in names:
+        row = _resolve(store, name, list(shown))
+        if row is None:
+            missing.append(name)
+        elif row not in rows:
+            rows.append(row)
+    parts = [_detail(store, r) for r in rows] + [f"No encuentro «{m}» en tu biblioteca." for m in missing]
+    return Reply("\n\n".join(parts), shown=[(r["appid"], r["name"]) for r in rows])
 
 
 def cmd_parecidos(store: Store, args: str) -> Reply:
@@ -359,13 +375,23 @@ def confirm_mark(appid: str, estado: str, backlog_path=BACKLOG_CSV,
     return confirm_marks([(appid, estado)], backlog_path, sync, refresh)
 
 
-def started_pending(store: Store) -> list[dict]:
-    """Juegos en «pendiente» que ya empezaste: lo jugado hace menos, primero."""
-    rows = [r for r in store.backlog if r["estado"] == "pendiente"
-            and (store.library.get(r["appid"], {}).get("hours") or 0) >= STARTED_HOURS]
+def started_pending(store: Store, query: str | None = None) -> list[dict]:
+    """Juegos en «pendiente» que ya empezaste, lo jugado hace menos primero.
+
+    Con `query` («sherlock holmes») entran todos los pendientes que casen, empezados o no."""
+    if query:
+        q = fold(query)
+        rows = ([r for r in store.backlog if q in fold(r["name"])]
+                or _token_matches(store.backlog, query) or find_games(store.backlog, query))
+        rows = [r for r in rows if r["estado"] == "pendiente"]
+    else:
+        rows = [r for r in store.backlog if r["estado"] == "pendiente"
+                and (store.library.get(r["appid"], {}).get("hours") or 0) >= STARTED_HOURS]
+
     def key(r):
-        lib = store.library[r["appid"]]
-        return (lib.get("last_played") is not None, lib.get("last_played") or "", lib["hours"])
+        lib = store.library.get(r["appid"], {})
+        last = lib.get("last_played")
+        return (last is not None, last.isoformat() if last else "", lib.get("hours") or 0)
     return sorted(rows, key=key, reverse=True)
 
 
@@ -373,22 +399,29 @@ REVIEW_BUTTONS = (("Terminado", "t"), ("Jugando", "j"), ("Abandonado", "a"),
                   ("Descartado", "d"), ("Saltar", "s"))
 
 
-def cmd_repasar(store: Store, skip=frozenset(), done: int = 0) -> Reply | None:
+def cmd_repasar(store: Store, skip=frozenset(), done: int = 0, query: str | None = None) -> Reply | None:
     """Siguiente juego del repaso, o None si no queda ninguno."""
-    rows = [r for r in started_pending(store) if r["appid"] not in skip]
+    rows = [r for r in started_pending(store, query) if r["appid"] not in skip]
     if not rows:
         return None
     row = rows[0]
-    head = f"Repaso de juegos empezados que siguen en pendiente (quedan {len(rows)}"
+    what = f"Repaso de «{query}»" if query else "Repaso de juegos empezados que siguen en pendiente"
+    head = f"{what} (quedan {len(rows)}"
     head += f", llevas {done})" if done else ")"
     buttons = [(label, f"rev:{row['appid']}:{code}") for label, code in REVIEW_BUTTONS]
     return Reply(f"{head}\n\n{_detail(store, row, hint=False)}", buttons + [("Parar", "rev:stop")],
                  shown=[(row["appid"], row["name"])], columns=3)
 
 
-def start_review(store: Store, state: dict) -> Reply:
-    state["review_skip"], state["review_done"] = set(), []
-    return cmd_repasar(store) or Reply("No tienes juegos empezados en «pendiente». Todo al día 👌")
+def start_review(store: Store, state: dict, query: str | None = None) -> Reply:
+    query = (query or "").strip() or None
+    state["review_skip"], state["review_done"], state["review_query"] = set(), [], query
+    reply = cmd_repasar(store, query=query)
+    if reply is not None:
+        return reply
+    if query:
+        return Reply(f"No tengo juegos en «pendiente» que casen con «{query}».")
+    return Reply("No tienes juegos empezados en «pendiente». Todo al día 👌")
 
 
 def finish_review(state: dict, sync=git_sync.commit_and_push, refresh=None) -> Reply:
@@ -412,7 +445,7 @@ def review_step(data: str, state: dict, backlog_path=BACKLOG_CSV, sync=git_sync.
         elif code in CODES and set_estado(appid, CODES[code], backlog_path):
             state.setdefault("review_done", []).append(appid)
         nxt = cmd_repasar((load or load_store)(), state.get("review_skip", set()),
-                          len(state.get("review_done") or []))
+                          len(state.get("review_done") or []), state.get("review_query"))
         if nxt is not None:
             return nxt
     return finish_review(state, sync, refresh)
@@ -445,8 +478,10 @@ def _last_shown(history: list[dict] | None) -> list[tuple[str, str]]:
     return next((list(h["shown"]) for h in reversed(history or []) if h.get("shown")), [])
 
 
-def free_text(store: Store, text: str, llm=llm_module, history: list[dict] | None = None) -> Reply:
-    """Texto libre. `history`: turnos anteriores, [{"user": texto, "shown": [(appid, nombre)]}]."""
+def free_text(store: Store, text: str, llm=llm_module, history: list[dict] | None = None,
+              state: dict | None = None) -> Reply:
+    """Texto libre. `history`: turnos anteriores, [{"user": texto, "shown": [(appid, nombre)]}].
+    `state`: estado del chat (el repaso guarda ahí su progreso)."""
     args = (store.games, store.scores, store.backlog)
     if not store.scores:
         return Reply(NO_DATA)  # sin datos no merece la pena gastar una llamada
@@ -462,8 +497,11 @@ def free_text(store: Store, text: str, llm=llm_module, history: list[dict] | Non
         return Reply(f"{why}; aquí van tus recomendaciones de siempre:\n\n" + render(None, recs),
                      shown=_shown(recs))
     if request.kind == "game":
-        log.info("Texto libre «%s» → ficha de «%s»", text, request.game)
-        return cmd_juego(store, request.game)
+        log.info("Texto libre «%s» → fichas de %s", text, request.games)
+        return cmd_juegos(store, request.games, _last_shown(history))
+    if request.kind == "review":
+        log.info("Texto libre «%s» → repaso «%s»", text, request.game)
+        return start_review(store, state if state is not None else {}, request.game)
     if request.kind == "recent":
         log.info("Texto libre «%s» → recientes (%d)", text, request.limit)
         return cmd_recientes(store, request.limit)

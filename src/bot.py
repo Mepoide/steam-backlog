@@ -33,7 +33,7 @@ MENU = (("top", "Tus filas: para ti, sesión corta, joyas"),
         ("parecidos", "Lo que más se parece a un juego"),
         ("recientes", "Lo último que llegó a tu biblioteca"),
         ("marcar", "Cambia el estado de un juego"),
-        ("repasar", "Clasifica los juegos que empezaste"),
+        ("repasar", "Clasifica los empezados (o /repasar <saga>)"),
         ("coste", "Gasto de IA de este mes"),
         ("ayuda", "Qué puedo hacer"))
 
@@ -115,16 +115,16 @@ async def on_parecidos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def on_repasar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    state = context.chat_data
-    await _send(update, lambda: commands.start_review(commands.load_store(), state), context)
+    state, query = context.chat_data, _args(context)
+    await _send(update, lambda: commands.start_review(commands.load_store(), state, query), context)
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.effective_message.text or ""
     # Los turnos anteriores dan contexto a «¿y de estrategia?», «¿esos los tengo?» o «márcalos».
-    history = list(context.chat_data.get("history") or [])
-    await _send(update, lambda: commands.free_text(commands.load_store(), text, history=history),
-                context)
+    history, state = list(context.chat_data.get("history") or []), context.chat_data
+    await _send(update, lambda: commands.free_text(commands.load_store(), text, history=history,
+                                                   state=state), context)
 
 
 async def on_coste(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

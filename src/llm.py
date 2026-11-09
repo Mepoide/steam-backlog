@@ -69,12 +69,25 @@ LAST_TOOL = {
 
 GAME_TOOL = {
     "name": "game_info",
-    "description": ("Ficha de un juego concreto de su biblioteca: horas jugadas, última partida, "
-                    "fecha de compra, duración, reseñas y tags. Para preguntas sobre UN juego."),
+    "description": ("Ficha de juegos concretos de su biblioteca: horas jugadas, última partida, "
+                    "fecha de compra, duración, reseñas y tags. Para preguntas sobre juegos que nombra."),
     "input_schema": {
         "type": "object",
-        "properties": {"name": {"type": "string", "description": "Nombre del juego, como lo escribe."}},
-        "required": ["name"],
+        "properties": {"names": {"type": "array", "items": {"type": "string"},
+                                 "description": "Nombre de cada juego, como lo escribe (1-5)."}},
+        "required": ["names"],
+        "additionalProperties": False,
+    },
+}
+
+REVIEW_TOOL = {
+    "name": "review_games",
+    "description": ("Repasar uno a uno, con botones para cambiar su estado, los juegos que empezó y "
+                    "siguen en pendiente; o solo los de un nombre o saga si lo dice."),
+    "input_schema": {
+        "type": "object",
+        "properties": {"query": {"type": "string",
+                                 "description": "Nombre o saga a repasar («sherlock holmes»); vacío = todos."}},
         "additionalProperties": False,
     },
 }
@@ -92,7 +105,11 @@ RECENT_TOOL = {
 
 PARSE_SYSTEM = """Atiendes a un jugador que pregunta por su biblioteca de Steam.
 Llama siempre a UNA herramienta:
-- game_info si pregunta por un juego concreto (cuánto lo ha jugado, qué tal es, cuánto dura...).
+- game_info si pregunta por juegos concretos (cuánto los ha jugado, qué tal son, cuánto duran...);
+  pon cada juego que nombre por separado y con su nombre completo («awakened» de Sherlock
+  Holmes → «Sherlock Holmes The Awakened»); la saga sola no es un juego.
+- review_games si quiere repasar u ordenar el estado de sus juegos («repasemos los de Sherlock
+  Holmes», «vamos a clasificar lo que tengo empezado»).
 - recent_games si pregunta qué ha comprado o se ha añadido hace poco a su biblioteca.
 - mark_games si cuenta cómo le va con juegos o pide marcarlos: terminado (se lo ha pasado),
   jugando (está con él), abandonado (lo empezó y lo dejó o le aburre), descartado (no lo ha empezado
@@ -133,9 +150,10 @@ ni formato."""
 @dataclass
 class Request:
     """Lo que pide el usuario: recomendar, una ficha, los recientes, marcar o la última lista."""
-    kind: str = "recommend"  # "recommend" | "game" | "recent" | "mark" | "last"
+    kind: str = "recommend"  # "recommend" | "game" | "recent" | "mark" | "last" | "review"
     filters: Filters = field(default_factory=Filters)
-    game: str = ""  # ficha («game») o referencia de «parecido a» («recommend»)
+    game: str = ""  # referencia de «parecido a» («recommend») o filtro del repaso («review»)
+    games: list[str] = field(default_factory=list)  # fichas pedidas («game»)
     limit: int = 10
     marks: list[tuple[str, str]] = field(default_factory=list)  # (nombre, estado)
 
@@ -218,7 +236,8 @@ def _marks(inp: dict) -> list[tuple[str, str]]:
     return out[:MAX_MARKS]
 
 
-TOOLS = [FILTERS_TOOL, GAME_TOOL, RECENT_TOOL, MARK_TOOL, LAST_TOOL]
+TOOLS = [FILTERS_TOOL, GAME_TOOL, RECENT_TOOL, MARK_TOOL, LAST_TOOL, REVIEW_TOOL]
+MAX_GAMES = 5
 
 
 def parse_request(text: str, known_tags: list[str], client=None,
@@ -234,8 +253,13 @@ def parse_request(text: str, known_tags: list[str], client=None,
     if call is None:
         raise LLMError(f"sin llamada a herramienta (stop_reason={resp.stop_reason})")
     inp = call.input or {}
-    if call.name == "game_info" and isinstance(inp.get("name"), str) and inp["name"].strip():
-        return Request(kind="game", game=inp["name"].strip())
+    if call.name == "game_info":
+        names = [n.strip() for n in inp.get("names") or [] if isinstance(n, str) and n.strip()]
+        if names:
+            return Request(kind="game", games=names[:MAX_GAMES])
+    if call.name == "review_games":
+        query = inp.get("query")
+        return Request(kind="review", game=query.strip() if isinstance(query, str) else "")
     if call.name == "recent_games":
         limit = inp.get("limit")
         return Request(kind="recent", limit=min(max(limit, 1), MAX_RECENT) if isinstance(limit, int) else 10)
