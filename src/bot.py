@@ -156,6 +156,9 @@ def _on_callback(allowed_chat_id: int):
         data = query.data or ""
         log.info("Botón: %s", data)
         reply = await _compute(lambda: callback_reply(data, context.chat_data))
+        if reply.shown and not reply.buttons:
+            # Fin de un repaso o marcado confirmado: «¿y sus estados?» debe saber de qué juegos hablamos.
+            remember(context.chat_data, "(pulsó un botón)", reply)
         try:
             await query.edit_message_text(reply.text[:MAX_MESSAGE], reply_markup=_markup(reply),
                                           link_preview_options=NO_PREVIEW)

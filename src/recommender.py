@@ -19,6 +19,8 @@ class Filters:
     min_reviews: int | None = None
     limit: int = 3
     like_appid: str | None = None  # «parecido a X»: ordena por similitud de tags con ese juego
+    appids: frozenset[str] | None = field(default=None, repr=False)  # p. ej. solo los familiares
+    sort: str = "gusto"  # "gusto" | "valoracion" (reseñas) | "duracion" (más cortos primero)
 
 
 @dataclass
@@ -53,6 +55,7 @@ GENRE_SHARE = 0.5  # los géneros de la tienda no tienen peso: cuentan como un t
 RELEVANCE_WEIGHT = 0.5  # con tags pedidos, el orden mezcla gusto (score) y cuánto encaja
 STARTED_HOURS = 2.0  # con estas horas jugadas ya no es una sugerencia nueva, aunque siga «pendiente»
 LIKE_WEIGHT = 0.7  # con «parecido a X», cuánto pesa parecerse a X frente a tu gusto general
+SORT_POOL = 15  # con «más cortos» o «mejor valorados», entre cuántos de los más relevantes elegir
 LIKE_TAGS_WEIGHT = 0.15  # y cuánto los tags que pidas además («rol por turnos parecido a X»)
 
 
@@ -154,6 +157,8 @@ def _select(f: Filters, games: dict, scores: dict, backlog: list[dict],
         appid = row["appid"]
         if row["estado"] != "pendiente" or appid in exclude or appid not in scores:
             continue
+        if f.appids is not None and appid not in f.appids:
+            continue
         if appid == f.like_appid or (scores[appid].get("played_hours") or 0) >= STARTED_HOURS:
             continue
         entry = games.get(appid, {})
@@ -176,6 +181,16 @@ def _select(f: Filters, games: dict, scores: dict, backlog: list[dict],
         return hits, (1 - RELEVANCE_WEIGHT) * c[4] + RELEVANCE_WEIGHT * relevance(c[2], f.include_tags)
 
     candidates.sort(key=rank, reverse=True)
+    if f.sort in ("valoracion", "duracion"):
+        # «Los más cortos / mejor valorados» de lo que encaja: si hay tags o referencia, se
+        # reordena solo lo más relevante; si no, toda la lista.
+        if ref or f.include_tags:
+            candidates = candidates[:SORT_POOL]
+        if f.sort == "valoracion":
+            candidates.sort(key=lambda c: c[0].get("quality", 0.0), reverse=True)
+        else:
+            candidates.sort(key=lambda c: c[2].get("hltb_main") if c[2].get("hltb_main") is not None
+                            else float("inf"))
 
     picked, skipped, anchors = [], [], set()
     for c in candidates:
