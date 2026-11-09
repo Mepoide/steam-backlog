@@ -155,7 +155,7 @@ def main():
     lib = {str(k): v for k, v in owned_games(key, steamid).items()}
     print(f"  {len(lib)} juegos")
     csv_path = RAW_DIR / "steam_library.csv"
-    shared_ok = False
+    shared_ok, shared_error = False, "sin STEAM_WEBAPI_TOKEN" if not token else ""
 
     if token:
         print("→ Biblioteca compartida…")
@@ -172,6 +172,7 @@ def main():
                     lib[appid] = s
         except Exception as e:
             print(f"  ⚠ Falló la biblioteca compartida ({e}). ¿Caducó STEAM_WEBAPI_TOKEN?")
+            shared_error = str(e)
 
     if not shared_ok:
         kept = keep_previous(lib, read_previous(csv_path))
@@ -191,6 +192,11 @@ def main():
         w.writerows(rows)
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(rows, f, ensure_ascii=False, indent=1)
+
+    # Para avisar por Telegram (notify.py) de que hay que renovar el token.
+    with open(RAW_DIR / "export_status.json", "w", encoding="utf-8") as f:
+        json.dump({"date": datetime.now(timezone.utc).strftime("%Y-%m-%d"), "shared_ok": shared_ok,
+                   "shared_error": shared_error}, f)
 
     n_shared = sum(1 for r in rows if r["source"] == "compartido")
     print(f"\n✓ {len(rows)} juegos ({len(rows) - n_shared} propios, {n_shared} compartidos)")

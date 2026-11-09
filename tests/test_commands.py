@@ -254,11 +254,11 @@ def test_coste_without_budget_and_unpriced():
 def test_juego_shows_playtime_dates_and_store_data():
     text = cmd_juego(store(), "hades").text
     first, second = text.split("\n\n")
-    assert first.startswith("Hades — pendiente\nSin jugar · biblioteca familiar, disponible desde 2021-07-01")
+    assert first.startswith("Hades — ⏳ pendiente\nSin jugar · biblioteca familiar, disponible desde 2021-07-01")
     assert "Duración: 24 h historia principal (HowLongToBeat)" in first
     assert "Reseñas: 10 % 👍 de 1000" in first  # fixture: 97 de 1000 and "Tags: Roguelike" in first
     assert first.endswith("https://store.steampowered.com/app/5")
-    assert second.startswith("Hades II — pendiente\n71.8 h jugadas (última vez 2026-11-08) · "
+    assert second.startswith("Hades II — ⏳ pendiente\n71.8 h jugadas (última vez 2026-11-08) · "
                              "comprado el 2026-07-22")
 
 
@@ -271,9 +271,9 @@ def test_recientes_sorted_by_acquired():
     text = cmd_recientes(store(), 3).text
     assert text.splitlines() == [
         "Últimos juegos añadidos a tu biblioteca:",
-        "1. Hades II — 2026-07-22 · propio · 71.8 h · pendiente",
-        "2. Stardew Valley — 2023-12-25 · propio · 1.0 h · pendiente",
-        "3. Hades — 2021-07-01 · familiar · sin jugar · pendiente",
+        "1. Hades II — 2026-07-22 · propio · 71.8 h · ⏳ pendiente",
+        "2. Stardew Valley — 2023-12-25 · propio · 1.0 h · ⏳ pendiente",
+        "3. Hades — 2021-07-01 · familiar · sin jugar · ⏳ pendiente",
     ]
     assert cmd_recientes(Store(games={}, scores={}, backlog=[]), 5).text.startswith("No tengo las fechas")
 
@@ -281,7 +281,7 @@ def test_recientes_sorted_by_acquired():
 def test_free_text_routes_game_and_recent_without_intro():
     r = free_text(store(), "cuánto he jugado al Hades",
                   llm=fake_llm(request=real_llm.Request(kind="game", games=["Hades II"]), intro_error=True))
-    assert r.text.startswith("Hades II — pendiente\n71.8 h jugadas")
+    assert r.text.startswith("Hades II — ⏳ pendiente\n71.8 h jugadas")
     r = free_text(store(), "qué he comprado hace poco",
                   llm=fake_llm(request=real_llm.Request(kind="recent", limit=1)))
     assert r.text.startswith("Últimos juegos añadidos a tu biblioteca:\n1. Hades II")
@@ -319,8 +319,8 @@ def test_mostrados_answers_where_games_come_from():
     text = cmd_mostrados(store(), [("5", "Hades"), ("7", "Stardew Valley")]).text
     assert text.splitlines() == [
         "Sí, todos están en tu biblioteca:",
-        "1. Hades — biblioteca familiar, disponible desde 2021-07-01 · dura 24 h · sin jugar · pendiente",
-        "2. Stardew Valley — comprado el 2023-12-25 · dura 53 h · 1.0 h · pendiente",
+        "1. Hades — biblioteca familiar, disponible desde 2021-07-01 · dura 24 h · sin jugar · ⏳ pendiente",
+        "2. Stardew Valley — comprado el 2023-12-25 · dura 53 h · 1.0 h · ⏳ pendiente",
     ]
     assert cmd_mostrados(store(), []).text.startswith("Aún no te he enseñado")
 
@@ -331,8 +331,8 @@ def test_plan_marks_prefers_shown_games_and_builds_one_button():
                                  ("Portal 2", "terminado"), ("zzzz", "jugando")], shown)
     assert reply.text.splitlines() == [
         "¿Hago estos cambios?",
-        "• Hades II: pendiente → terminado",  # «Hades» se refería al mostrado
-        "• Celeste: pendiente → abandonado",
+        "• Hades II: ⏳ pendiente → ✅ terminado",  # «Hades» se refería al mostrado
+        "• Celeste: ⏳ pendiente → 💤 abandonado",
         "No encuentro «zzzz» en el backlog.",
     ]
     assert reply.buttons == [("Sí", "marks:6=t,8=a"), ("Cancelar", "cancel")]
@@ -351,7 +351,7 @@ def test_confirm_marks_writes_all_syncs_once_and_refreshes(backlog_file):
                           backlog_path=backlog_file,
                           sync=lambda paths, msg: calls.append(msg) or True,
                           refresh=lambda: refreshed.append(1))
-    assert reply.text == "✓ Marcados:\n• Hades II → terminado\n• Celeste → abandonado"
+    assert reply.text == "✓ Marcados:\n• Hades II → ✅ terminado\n• Celeste → 💤 abandonado"
     assert calls == ["backlog: Hades II → terminado, Celeste → abandonado"] and refreshed == [1]
     estados = {r["appid"]: r["estado"] for r in read_backlog(backlog_file)}
     assert estados["6"] == "terminado" and estados["8"] == "abandonado"
@@ -407,14 +407,16 @@ def test_review_flow_marks_locally_and_syncs_once_at_the_end(backlog_file):
     nxt = review_step("rev:8:s", state, backlog_path=backlog_file, sync=sync, load=load)
     assert "Stardew Valley" in nxt.text
     done = review_step("rev:7:a", state, backlog_path=backlog_file, sync=sync, load=load)
-    assert done.text == "Repaso terminado: 2 juegos actualizados."
+    assert done.text == ("Repaso terminado: 2 juegos actualizados\n"
+                         "• Hades II → ✅ terminado\n• Stardew Valley → 💤 abandonado")
+    assert done.shown == [("6", "Hades II"), ("7", "Stardew Valley")]
     assert calls == ["backlog: repaso (2 juegos)"]
     estados = {r["appid"]: r["estado"] for r in read_backlog(backlog_file)}
     assert (estados["6"], estados["7"], estados["8"]) == ("terminado", "abandonado", "pendiente")
 
 
 def test_review_stop_and_nothing_to_review():
-    state = {"review_done": []}
+    state = {"review_done": [], "review_active": True}
     assert review_step("rev:stop", state, sync=lambda p, m: True).text.startswith(
         "Repaso terminado; no has cambiado nada")
     s = store()
@@ -450,7 +452,7 @@ def test_juegos_several_names_one_card_each():
     reply = free_text(store(), "awakened y celeste", llm=fake_llm(
         request=real_llm.Request(kind="game", games=["Hades II", "celeste", "zzzz"])))
     cards = reply.text.split("\n\n")
-    assert cards[0].startswith("Hades II — pendiente") and cards[1].startswith("Celeste — pendiente")
+    assert cards[0].startswith("Hades II — ⏳ pendiente") and cards[1].startswith("Celeste — ⏳ pendiente")
     assert cards[2] == "No encuentro «zzzz» en tu biblioteca."
     assert [a for a, _ in reply.shown] == ["6", "8"]
 
@@ -466,7 +468,7 @@ def test_review_by_name_includes_unstarted_and_keeps_filter(backlog_file):
         return s
     nxt = review_step("rev:6:t", state, backlog_path=backlog_file, sync=lambda p, m: True, load=load)
     assert nxt.text.startswith("Repaso de «hades» (quedan 1, llevas 1)\n\nHades —")
-    assert start_review(s, {}, "zzzz").text == "No tengo juegos en «pendiente» que casen con «zzzz»."
+    assert start_review(s, {}, "zzzz").text == "No encuentro juegos que casen con «zzzz»."
 
 
 def test_free_text_review_uses_chat_state():
@@ -474,3 +476,92 @@ def test_free_text_review_uses_chat_state():
     reply = free_text(started_store(), "repasemos los de hades", state=state,
                       llm=fake_llm(request=real_llm.Request(kind="review", game="hades")))
     assert reply.buttons[0] == ("Terminado", "rev:6:t") and state["review_query"] == "hades"
+
+
+def test_review_double_tap_and_buttons_after_finish(backlog_file):
+    s, state, calls = started_store(), {}, []
+    sync = lambda paths, msg: calls.append(msg) or True
+
+    def load():
+        s.backlog = read_backlog(backlog_file)
+        return s
+    start_review(s, state, "hades")
+    review_step("rev:6:t", state, backlog_path=backlog_file, sync=sync, load=load)
+    again = review_step("rev:6:a", state, backlog_path=backlog_file, sync=sync, load=load)  # doble toque
+    assert "llevas 1" in again.text
+    done = review_step("rev:5:t", state, backlog_path=backlog_file, sync=sync, load=load)
+    assert done.text.startswith("Repaso terminado: 2 juegos actualizados")
+    late = review_step("rev:5:t", state, backlog_path=backlog_file, sync=sync, load=load)
+    assert late.text == "Este repaso ya terminó. Empieza otro con /repasar." and calls == [
+        "backlog: repaso (2 juegos)"]
+    estados = {r["appid"]: r["estado"] for r in read_backlog(backlog_file)}
+    assert estados["6"] == "terminado"  # el doble toque no lo cambió a abandonado
+
+
+def test_review_with_nothing_pending_shows_current_states():
+    s = store()
+    for r in s.backlog:
+        if r["appid"] in ("5", "6"):
+            r["estado"] = "terminado"
+    reply = start_review(s, {}, "hades")
+    assert reply.text == ("Ya no queda ninguno de «hades» en «pendiente». Están así:\n"
+                          "• Hades — ✅ terminado\n• Hades II — ✅ terminado")
+    assert start_review(s, {}, "zzzz").text == "No encuentro juegos que casen con «zzzz»."
+
+
+def test_free_text_status_by_name_or_last_shown():
+    r = free_text(store(), "¿cómo tengo los de hades?",
+                  llm=fake_llm(request=real_llm.Request(kind="status", game="hades")))
+    assert r.text == "• Hades — ⏳ pendiente\n• Hades II — ⏳ pendiente"
+    history = [{"user": "(pulsó un botón)", "shown": [("9", "Portal 2")]}]
+    r = free_text(store(), "dame sus estados", history=history,
+                  llm=fake_llm(request=real_llm.Request(kind="status")))
+    assert "1. Portal 2 — comprado el 2019-03-03" in r.text and r.text.endswith("terminado")
+
+
+def test_confirm_marks_reports_shown(backlog_file):
+    reply = confirm_marks([("6", "terminado")], backlog_path=backlog_file, sync=lambda p, m: True)
+    assert reply.shown == [("6", "Hades II")]
+
+
+def test_free_text_help_and_cost():
+    assert free_text(store(), "hola", llm=fake_llm(request=real_llm.Request(kind="help", game="ayuda"))
+                     ).text.startswith("Te ayudo a elegir")
+    assert free_text(store(), "gasto IA", llm=fake_llm(request=real_llm.Request(kind="help", game="coste"))
+                     ).text.startswith("IA este mes:")
+
+
+def test_free_text_status_falls_back_to_last_shown():
+    history = [{"user": "(pulsó un botón)", "shown": [("5", "Hades"), ("9", "Portal 2")]}]
+    req = real_llm.Request(kind="status", game="Celeste; Portal 2")
+    r = free_text(store(), "dame sus estados", history=history, llm=fake_llm(request=req))
+    assert r.text == "• Celeste — ⏳ pendiente\n• Portal 2 — ✅ terminado"  # «;» separa nombres
+    r = free_text(store(), "dame sus estados", history=history,
+                  llm=fake_llm(request=real_llm.Request(kind="status", game="zzzz")))
+    assert r.text.startswith("Así están:\n1. Hades") and "2. Portal 2" in r.text
+    r = free_text(store(), "¿y sus estados?", llm=fake_llm(request=real_llm.Request(kind="status")))
+    assert r.text == "¿De qué juegos? Dime un nombre o una saga."
+
+
+def test_free_text_source_family_only():
+    req = real_llm.Request(filters=Filters(limit=5), source="familiar")
+    r = free_text(store(), "de la familiar", llm=fake_llm(request=req))
+    assert "Hades" in r.text and "Celeste" in r.text and "Stardew" not in r.text
+
+
+def test_replies_carry_header_photos():
+    s = store()
+    s.games["5"]["images"] = {"header": "https://cdn/5/header.jpg"}
+    s.games["6"]["images"] = {"header": "https://cdn/6/header.jpg"}
+    assert cmd_juego(s, "hades").photos == [("https://cdn/5/header.jpg", "Hades"),
+                                           ("https://cdn/6/header.jpg", "Hades II")]
+    rec = cmd_recomienda(s, "")
+    assert rec.photos[0] == ("https://cdn/5/header.jpg", "1. Hades")  # sin imagen, no hay foto
+    assert all(url.startswith("https://cdn/") for url, _ in rec.photos)
+    review = cmd_repasar(started_store_with(s))
+    assert review.photos == [("https://cdn/6/header.jpg", "Hades II")]
+
+
+def started_store_with(s):
+    s.library["7"]["hours"] = 5.0
+    return s

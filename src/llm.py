@@ -35,6 +35,11 @@ FILTERS_TOOL = {
             "limit": {"type": "integer", "description": "Número de juegos a recomendar, 1-5."},
             "like_game": {"type": "string",
                           "description": "Si pide juegos parecidos a uno concreto, su nombre."},
+            "source": {"type": "string", "enum": ["propio", "familiar"],
+                       "description": "Solo juegos propios o solo de la biblioteca familiar, si lo pide."},
+            "sort": {"type": "string", "enum": ["gusto", "valoracion", "duracion"],
+                     "description": ("Orden: gusto (por defecto), valoracion (mejor valorados por "
+                                     "reseñas) o duracion (más cortos primero).")},
         },
         "additionalProperties": False,
     },
@@ -80,6 +85,32 @@ GAME_TOOL = {
     },
 }
 
+STATUS_TOOL = {
+    "name": "game_status",
+    "description": ("Ver en qué estado (pendiente, jugando, terminado, abandonado, descartado) "
+                    "están juegos de su backlog: los de un nombre o saga, o los que acaba de "
+                    "mostrar o tocar el bot si no dice cuáles."),
+    "input_schema": {
+        "type": "object",
+        "properties": {"query": {"type": "string",
+                                 "description": ("UN nombre o saga («sherlock holmes»). Vacío si se "
+                                                 "refiere a los últimos juegos que mostró el bot.")}},
+        "additionalProperties": False,
+    },
+}
+
+HELP_TOOL = {
+    "name": "bot_help",
+    "description": ("Preguntas sobre el propio bot: saludos, qué puede hacer, cómo se usa (ayuda) o "
+                    "cuánto lleva gastado en IA (coste)."),
+    "input_schema": {
+        "type": "object",
+        "properties": {"topic": {"type": "string", "enum": ["ayuda", "coste"]}},
+        "required": ["topic"],
+        "additionalProperties": False,
+    },
+}
+
 REVIEW_TOOL = {
     "name": "review_games",
     "description": ("Repasar uno a uno, con botones para cambiar su estado, los juegos que empezó y "
@@ -108,8 +139,10 @@ Llama siempre a UNA herramienta:
 - game_info si pregunta por juegos concretos (cuánto los ha jugado, qué tal son, cuánto duran...);
   pon cada juego que nombre por separado y con su nombre completo («awakened» de Sherlock
   Holmes → «Sherlock Holmes The Awakened»); la saga sola no es un juego.
-- review_games si quiere repasar u ordenar el estado de sus juegos («repasemos los de Sherlock
-  Holmes», «vamos a clasificar lo que tengo empezado»).
+- review_games solo si quiere ponerse a clasificar o cambiar el estado de sus juegos uno a uno
+  («repasemos los de Sherlock Holmes», «vamos a clasificar lo que tengo empezado»).
+- game_status si pregunta en qué estado están («¿qué estados tienen?», «¿cómo tengo los de
+  Sherlock?», «dame sus estados»); sin nombre se refiere a los últimos que mostró o tocó el bot.
 - recent_games si pregunta qué ha comprado o se ha añadido hace poco a su biblioteca.
 - mark_games si cuenta cómo le va con juegos o pide marcarlos: terminado (se lo ha pasado),
   jugando (está con él), abandonado (lo empezó y lo dejó o le aburre), descartado (no lo ha empezado
@@ -117,6 +150,7 @@ Llama siempre a UNA herramienta:
   pendiente (aún quiere jugarlo). Incluye todos los que mencione, cada uno con su estado.
 - last_results si pregunta algo sobre los juegos que el bot acaba de mostrar
   («¿esos los tengo?», «¿cuánto duran?», «¿cuáles son de la familiar?»).
+- bot_help si saluda sin pedir nada, pregunta qué puede hacer el bot o cuánto ha gastado en IA.
 - set_filters para todo lo demás: qué jugar, recomendaciones, géneros, duraciones.
 Te doy la conversación reciente para entender el mensaje actual: «¿y de estrategia?» sigue
 recomendando; si el actual aclara o corrige el anterior («fecha de compra me refiero» tras
@@ -127,6 +161,8 @@ Reglas de set_filters:
 - max_hours es la duración TOTAL del juego, no la de la sesión. Úsala solo si el usuario
   habla de juegos cortos o de terminar algo en poco tiempo.
 - like_game: si pide algo «parecido a», «como» o «del estilo de» un juego, pon su nombre.
+- source: «de la biblioteca familiar» / «de los compartidos» → familiar; «de los míos» → propio.
+- sort: «el mejor valorado», «lo mejor que tengo» → valoracion; «lo más corto» → duracion.
 - Traduce lo que pide a tags usando SOLO esta lista (copia los nombres tal cual):
 {tags}
 - En include_tags pon de 1 a 3 tags, los más específicos que describan la petición
@@ -150,12 +186,13 @@ ni formato."""
 @dataclass
 class Request:
     """Lo que pide el usuario: recomendar, una ficha, los recientes, marcar o la última lista."""
-    kind: str = "recommend"  # "recommend" | "game" | "recent" | "mark" | "last" | "review"
+    kind: str = "recommend"  # recommend | game | recent | mark | last | review | status | help
     filters: Filters = field(default_factory=Filters)
     game: str = ""  # referencia de «parecido a» («recommend») o filtro del repaso («review»)
     games: list[str] = field(default_factory=list)  # fichas pedidas («game»)
     limit: int = 10
     marks: list[tuple[str, str]] = field(default_factory=list)  # (nombre, estado)
+    source: str = ""  # "propio" | "familiar" (filtro de recomendación)
 
 
 @dataclass
@@ -236,7 +273,8 @@ def _marks(inp: dict) -> list[tuple[str, str]]:
     return out[:MAX_MARKS]
 
 
-TOOLS = [FILTERS_TOOL, GAME_TOOL, RECENT_TOOL, MARK_TOOL, LAST_TOOL, REVIEW_TOOL]
+TOOLS = [FILTERS_TOOL, GAME_TOOL, RECENT_TOOL, MARK_TOOL, LAST_TOOL, REVIEW_TOOL, STATUS_TOOL,
+         HELP_TOOL]
 MAX_GAMES = 5
 
 
@@ -257,9 +295,12 @@ def parse_request(text: str, known_tags: list[str], client=None,
         names = [n.strip() for n in inp.get("names") or [] if isinstance(n, str) and n.strip()]
         if names:
             return Request(kind="game", games=names[:MAX_GAMES])
-    if call.name == "review_games":
+    if call.name == "bot_help":
+        return Request(kind="help", game="coste" if inp.get("topic") == "coste" else "ayuda")
+    if call.name in ("review_games", "game_status"):
         query = inp.get("query")
-        return Request(kind="review", game=query.strip() if isinstance(query, str) else "")
+        return Request(kind="review" if call.name == "review_games" else "status",
+                       game=query.strip() if isinstance(query, str) else "")
     if call.name == "recent_games":
         limit = inp.get("limit")
         return Request(kind="recent", limit=min(max(limit, 1), MAX_RECENT) if isinstance(limit, int) else 10)
@@ -268,13 +309,19 @@ def parse_request(text: str, known_tags: list[str], client=None,
     if call.name == "last_results":
         return Request(kind="last")
     like = inp.get("like_game")
-    return Request(filters=_filters(inp, known_tags),
-                   game=like.strip() if isinstance(like, str) else "")
+    filters = _filters(inp, known_tags)
+    if inp.get("sort") in ("valoracion", "duracion"):
+        filters.sort = inp["sort"]
+    return Request(filters=filters, game=like.strip() if isinstance(like, str) else "",
+                   source=inp.get("source") if inp.get("source") in ("propio", "familiar") else "")
 
 
 def write_intro(text: str, recs: list[Recommendation], client=None) -> str:
-    listing = "\n".join(f"- {r.name}: {r.reason}" + (f"; tags: {', '.join(r.tags)}" if r.tags else "")
-                         for r in recs)
+    listing = "\n".join(
+        f"- {r.name}: {r.reason}"
+        + (f"; dura {r.hours:.1f} h (historia principal)" if r.hours else "; duración desconocida")
+        + (f"; tags: {', '.join(r.tags)}" if r.tags else "")
+        for r in recs)
     resp = _create(
         client, "intro", model=MODEL, max_tokens=1000, output_config={"effort": "low"},
         system=INTRO_SYSTEM,

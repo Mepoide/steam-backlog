@@ -41,7 +41,7 @@ def test_sources_are_store_items_hltb():
 def test_new_game_gets_all_sources_merged():
     f = Fakes()
     cache = enrich_all({"1": "Uno"}, {}, f.fetchers())
-    assert cache["1"] == {"name": "Uno", **STORE, **ITEMS, **HLTB, "missing": []}
+    assert cache["1"] == {"name": "Uno", **STORE, **ITEMS, **HLTB, "images": {}, "missing": []}
 
 
 def test_complete_cached_entry_not_refetched():
@@ -108,3 +108,12 @@ def test_name_updated_from_library():
     cache = enrich_all({"1": "Uno"}, {}, f.fetchers())
     cache = enrich_all({"1": "Uno (renombrado)"}, cache, Fakes().fetchers())
     assert cache["1"]["name"] == "Uno (renombrado)"
+
+
+def test_cached_entry_without_images_refetches_items_only():
+    f = Fakes()
+    cache = enrich_all({"1": "Uno"}, {}, f.fetchers())
+    del cache["1"]["images"]
+    f2 = Fakes()
+    enrich_all({"1": "Uno"}, cache, f2.fetchers())
+    assert f2.total() == 1 and f2.total("items") == 1

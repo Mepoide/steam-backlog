@@ -95,9 +95,11 @@ flowchart LR
 | `src/commands.py` | Un `Reply` por comando, más el texto libre, el marcado y el repaso. Sin Telegram, así se prueba con datos falsos | todo lo anterior |
 | `src/bot.py` | Adaptador de Telegram: handlers, botones, memoria del chat, errores y menú | python-telegram-bot, commands |
 | `src/git_sync.py` | `commit` + `pull --rebase` + `push` de `backlog.csv`, con un candado de fichero | git |
+| `src/images.py` | URL de cada imagen de un juego y caché local en `data/images/` (para la web) | config |
+| `src/notify.py` | Avisos del job diario por Telegram (hoy: el token de la familiar caducó) | config |
 
 El reparto sigue una regla: **la lógica no conoce el canal**. `commands.py`
-devuelve `Reply(text, buttons, shown, columns)` y `bot.py` lo traduce a
+devuelve `Reply(text, buttons, shown, columns, photos)` y `bot.py` lo traduce a
 Telegram. Una futura web reutilizaría `commands`, `recommender` y `taste` tal
 cual.
 
@@ -110,11 +112,14 @@ data/                            ← todo ignorado
 ├── raw/steam_library.csv|json   ← export: origen, horas, fechas y dueños (SteamIDs)
 ├── enriched/
 │   ├── games.json               ← por appid: géneros, categorías, tags{nombre: peso},
-│   │                              reseñas, hltb_main/extra, fuentes que faltan
+│   │                              reseñas, hltb_main/extra, images{tipo: URL},
+│   │                              fuentes que faltan
 │   ├── playtime_cache.json      ← horas de juegos que desaparecen del export
 │   ├── profile.json             ← vector de gusto {tag: peso}
 │   └── scores.json              ← por pendiente: score, sim, quality, ancla, tags
 │                                  compartidos y horas jugadas
+├── raw/export_status.json       ← si el último export pudo leer la biblioteca familiar
+├── images/<appid>/<tipo>.jpg    ← caché local de imágenes de la tienda (para la web)
 ├── llm_usage.jsonl              ← una línea por llamada a Claude con tokens y coste
 ├── logs/{daily,bot}.log
 └── .git.lock                    ← candado entre el job y el bot
@@ -267,7 +272,7 @@ sequenceDiagram
     B->>C: texto + historial (3 turnos y juegos mostrados)
     C->>L: parse_request(texto, tags conocidos, historial)
     L->>L: ¿queda presupuesto?
-    L->>A: system (reglas + 331 tags) + 6 herramientas, tool_choice=any
+    L->>A: system (reglas + 331 tags) + 8 herramientas, tool_choice=any
     A-->>L: set_filters{include_tags, like_game:"Baldur's Gate 3"}
     L-->>C: Request(kind=recommend, filters, game)
     C->>C: resuelve «Baldur's Gate 3» → appid
@@ -303,7 +308,7 @@ sequenceDiagram
 | Fuente | Datos | Ritmo |
 |---|---|---|
 | `store.steampowered.com/api/appdetails` (`l=spanish`) | géneros, categorías («Un jugador»…), metacritic | 1 petición cada 1,5 s |
-| `IStoreBrowseService/GetItems` + `GetTagList` | hasta 20 tags **con peso** y en español, y reseñas (total y % positivo) | 1 por segundo |
+| `IStoreBrowseService/GetItems` + `GetTagList` | hasta 20 tags **con peso** y en español, reseñas (total y % positivo) e **imágenes** (`include_assets`) | 1 por segundo |
 | HowLongToBeat (`howlongtobeatpy`) | horas de la historia principal y con extras | 1 por segundo |
 
 - Hay una **caché incremental**: cada entrada guarda en `missing` las fuentes
@@ -314,6 +319,11 @@ sequenceDiagram
 - En **HLTB** se limpian los ™ ® © del nombre, se busca y se acepta el mejor
   resultado solo si su similitud es ≥ 0,6. Si no, la duración se queda
   desconocida, que es mejor que una duración equivocada.
+- **Imágenes.** `GetItems` devuelve los ficheros de cada juego y un patrón
+  `asset_url_format` con la versión (`?t=…`). Se guardan como URLs absolutas de
+  la CDN de Steam (`shared.akamai.steamstatic.com`): `header` 460×215, `capsule`
+  616×353, `small` 231×87, `portrait` 600×900, `hero` 1920×620 e `icon` 32×32.
+  Las entradas de caché anteriores a las imágenes vuelven a pedir solo `items`.
 
 ### 3.3 Perfil de gusto (`taste.py`)
 
@@ -389,6 +399,7 @@ rasgo relevante del juego y no un tag residual.
 | `include_tags` | Casa al menos uno |
 | `exclude_tags` | No casa ninguno |
 | `min_positive`, `min_reviews` | Umbrales sobre las reseñas |
+| `appids` | Solo esos juegos. El texto libre lo usa para «de la biblioteca familiar» o «de los míos» |
 
 **Orden:**
 
@@ -402,6 +413,12 @@ rasgo relevante del juego y no un tag residual.
 `relevancia` es la media de `tag_share` de los términos pedidos, contando 0 los
 que no llegan a 0,25.
 
+**Orden explícito** (`sort`). «El mejor valorado» ordena por la calidad
+bayesiana y «lo más corto» por la duración en HLTB, con las desconocidas al
+final. Si además hay tags o «parecido a X», primero se eligen los 15 más
+relevantes y solo esos se reordenan. Así, «¿y más cortos?» tras «algo como
+Hades» devuelve roguelikes cortos y no el juego más corto de la biblioteca.
+
 **Variedad.** No se repite el mismo ancla («porque jugaste X» dos veces) hasta
 agotar las alternativas. Con «parecido a» no se aplica, porque el motivo ya es
 el juego de referencia.
@@ -412,22 +429,25 @@ el juego de referencia.
 ### 3.6 Texto libre con Claude (`llm.py`)
 
 Se hace una llamada de **parseo** con `tool_choice: any`, que obliga a usar una
-de las seis herramientas y no a contestar en prosa:
+de las ocho herramientas y no a contestar en prosa:
 
 | Herramienta | Cuándo | Resultado |
 |---|---|---|
-| `set_filters` | Qué jugar, géneros, duración, «parecido a X» | `Request(kind="recommend", filters, game=X)` |
+| `set_filters` | Qué jugar, géneros, duración, «parecido a X», origen (`source`), orden (`sort`) | `Request(kind="recommend", filters, game=X, source)` |
 | `game_info` | Pregunta por uno o varios juegos concretos | una ficha por juego (hasta 5) |
 | `review_games` | «Repasemos los de Sherlock Holmes» | repaso con botones, filtrado por nombre |
 | `recent_games` | Qué ha llegado a la biblioteca hace poco | lista por fecha de adquisición |
 | `mark_games` | «Me he pasado X», «Y me aburre», «márcalos» | cambios de estado que se confirman con un botón |
 | `last_results` | «¿Esos los tengo?», «¿cuánto duran?» | origen, duración y horas de lo último mostrado |
+| `game_status` | «Dame sus estados», «¿cómo tengo los de Sherlock?» | estado de los juegos de un nombre o saga; sin nombre (o si no casa), los últimos mostrados o tocados con botones |
+| `bot_help` | Saludos, «qué puedes hacer», «cuánto llevo gastado» | la ayuda o `/coste` |
 
 - **Contexto.** El prompt de sistema incluye **todos** los tags conocidos (331),
   para que el modelo copie nombres reales y no los invente. El mensaje del
   usuario va acompañado de los 3 últimos turnos, cada uno con los juegos que
   mostró el bot. Con eso se resuelven «¿y de estrategia?», «los dos últimos» o
-  «fecha de compra me refiero».
+  «fecha de compra me refiero». Los botones también dejan rastro: al terminar un
+  repaso o confirmar un marcado, el turno se guarda con los juegos afectados.
 - **Validación de lo que devuelve.** Los tags que no casan con la lista
   conocida se descartan. `limit` se acota a 1-5, `recent` a 1-20 y
   `min_positive` a 0-1. Los estados deben ser válidos y se admiten como mucho 5
@@ -437,8 +457,8 @@ de las seis herramientas y no a contestar en prosa:
   juegos que se acaban de mostrar (nombre exacto o contenido) y después en todo
   el backlog.
 - **Intro.** Una segunda llamada con `effort: low` escribe 1-2 frases sobre la
-  lista ya elegida. Recibe los tags de cada juego para no inventar, y se le
-  quitan las viñetas si intenta repetir la lista.
+  lista ya elegida. Recibe la duración y los tags de cada juego para no
+  inventar, y se le quitan las viñetas si intenta repetir la lista.
 - **Confirmación.** Cambiar estados siempre pide confirmación con un botón. El
   LLM propone y el usuario confirma.
 
@@ -465,10 +485,48 @@ Se aplica en orden y se para en el primer paso que encuentra algo:
   mensaje.
 - **Cuándo se sube.** Hay un **único commit** al pulsar Parar o al acabar, en
   vez de uno por botón. Si se deja a medias, lo sube el job diario.
+- **Dobles toques.** Un segundo toque sobre un juego ya atendido no cambia nada,
+  y un botón de un repaso ya terminado responde «Este repaso ya terminó». Al
+  acabar se listan los cambios. Si al pedir un repaso por nombre no queda nada
+  pendiente, se muestra cómo están esos juegos.
 - **Perfil.** Al terminar se llama a `taste.refresh()`, y el perfil incorpora
   los nuevos estados en ese momento.
 
-### 3.9 Control de costes (`usage.py`)
+### 3.9 Imágenes y presentación
+
+**En el bot (`bot.deliver`, `bot.replace`).** Cada `Reply` puede llevar
+`photos`, que son pares (URL, pie). Telegram descarga las imágenes de la CDN de
+Steam, así que el bot no guarda nada:
+
+| Respuesta | Cómo se ve |
+|---|---|
+| Recomendaciones, `/top`, `/parecidos` | álbum con la cabecera de cada juego («1. Nombre» de pie, hasta 10) y debajo la lista con motivos y enlaces |
+| Ficha de un juego (`/juego`) | la cabecera con la ficha como pie, en un solo mensaje (si cabe en 1 024 caracteres) |
+| Varias fichas | álbum y, debajo, las fichas |
+| Repaso | la cabecera del juego con la ficha y los botones; al pulsar, la foto se cambia en el mismo mensaje (`edit_media`) |
+| Estados y cambios | emoji por estado: ⏳ pendiente · 🎮 jugando · ✅ terminado · 💤 abandonado · 🚫 descartado |
+
+Si Telegram rechaza una imagen, se envía solo el texto: las imágenes adornan,
+nunca impiden responder. Si un botón cambia el tipo de mensaje (de foto a
+texto al acabar un repaso), el mensaje se borra y se envía de nuevo.
+
+**Para la web.** `src/images.py` descarga a `data/images/<appid>/<tipo>.jpg`
+las que falten, por defecto `header`, `portrait` e `icon`, desde el job diario
+y a una cada 0,2 s. La web puede servirlas en local, sin depender de la CDN ni
+filtrar a Steam qué juegos se miran. Uso previsto de cada tipo:
+
+| Tipo | Uso en la web |
+|---|---|
+| `portrait` 600×900 | rejilla del backlog, como la biblioteca de Steam |
+| `header` 460×215 | tarjetas de recomendación y resultados |
+| `hero` 1920×620 | fondo de la ficha de un juego |
+| `capsule` 616×353 | destacados («Para ti») |
+| `icon` 32×32 | listas compactas, historial y repaso |
+
+Las imágenes son de Steam y de cada editora. Se usan para mostrar tu propia
+biblioteca y viven en `data/` (ignorado), nunca en el repositorio público.
+
+### 3.10 Control de costes (`usage.py`)
 
 - **Coste por llamada**, a partir de su `usage` real:
 
@@ -493,13 +551,14 @@ Se aplica en orden y se para en el primer paso que encuentra algo:
 
 | Fallo | Comportamiento |
 |---|---|
-| Caduca el token de la familiar (401) | El export conserva del export anterior los juegos compartidos y las fechas de compra, que solo da esa API. Las horas de los compartidos se quedan como estaban hasta renovar el token |
+| Caduca el token de la familiar (401) | El export conserva del export anterior los juegos compartidos y las fechas de compra, que solo da esa API. Las horas de los compartidos se quedan como estaban hasta renovar el token. `notify.py` avisa por Telegram con las instrucciones para renovarlo |
+| Una imagen no carga en Telegram | Se envía la respuesta sin imágenes |
 | Una fuente del enriquecimiento cae o devuelve 429 | La fuente queda en `missing` y se reintenta al día siguiente |
 | Claude no responde, no hay clave o se agota el presupuesto | Recomendaciones «Para ti» con un aviso. Los comandos con `/` no se ven afectados |
 | Falla solo la intro | Se envía la lista sin la frase |
 | Falla el push a GitHub | El cambio se queda en local («queda en local») y lo sube el siguiente `git_sync` |
 | Cortes de red con Telegram | Una línea de aviso en el log; la librería reintenta sola |
-| Doble toque en un botón | Se ignora el `BadRequest: message is not modified` |
+| Doble toque en un botón | No se repite el cambio; se ignora el `BadRequest: message is not modified` |
 | Falla el recálculo del perfil tras marcar | El marcado se completa igualmente; el log guarda la traza y el job diario lo recalcula |
 
 ---
@@ -520,30 +579,34 @@ Se aplica en orden y se para en el primer paso que encuentra algo:
 
 ## 6. Pruebas
 
-`pytest` (unos 160 tests) sin red:
+`pytest` (unos 190 tests) sin red:
 
 - **Fuentes:** respuestas grabadas en `tests/fixtures/`.
 - **LLM:** un cliente falso que devuelve llamadas a herramientas. Se comprueban
   las herramientas enviadas, el contexto, la validación y el registro de uso.
 - **Comandos y texto libre:** un `Store` en memoria y un módulo `llm` falso.
-- **Bot:** registro de handlers, filtros de chat, botones, memoria y gestión de
-  errores, con `Update` sintéticos.
+- **Bot:** registro de handlers, filtros de chat, botones, memoria, gestión de
+  errores, y envío y edición de fotos, con `Update` sintéticos y un bot falso.
 - **Escrituras:** `backlog.csv` en `tmp_path`, con un `sync` y un `refresh`
   inyectados para que ningún test toque git ni los datos reales.
 
 La calidad de las recomendaciones se revisa con conversaciones reales. El log
 del bot registra cada mensaje, la petición que extrajo Claude y los juegos
-devueltos.
+devueltos. Además se pasa una batería de frases típicas («dame sus estados»,
+«¿y más cortos?», «de la biblioteca familiar», «hola»…) contra Haiku real
+antes de cada entrega.
 
 ---
 
 ## 7. Limitaciones conocidas y siguientes pasos
 
 - Un `/marcar` justo mientras corre el job de las 06:00 puede perderse.
-- El token de la biblioteca familiar caduca cada día, y renovarlo es manual.
+- El token de la biblioteca familiar caduca cada día, y renovarlo es manual
+  (el bot avisa).
 - La memoria de la conversación vive en RAM y se pierde al reiniciar el bot.
 - Las opiniones («me gustan») no se guardan como tales: solo influyen a través
   del estado. Podrían guardarse en la columna `notas`.
 - Las duraciones de HLTB faltan en algunos juegos (aparecen como «? h») y esos
   juegos no pasan el filtro de duración.
-- Una interfaz web reutilizaría `commands`, `recommender` y `taste` sin cambios.
+- Una interfaz web reutilizaría `commands`, `recommender`, `taste` e `images` sin
+  cambios. Las imágenes ya están en caché local (ver 3.9).

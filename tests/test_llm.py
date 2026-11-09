@@ -52,7 +52,8 @@ def test_parse_request_forces_a_tool_and_model():
     assert c.kwargs["model"] == MODEL
     assert c.kwargs["tool_choice"] == {"type": "any"}
     assert [t["name"] for t in c.kwargs["tools"]] == ["set_filters", "game_info", "recent_games",
-                                                      "mark_games", "last_results", "review_games"]
+                                                      "mark_games", "last_results", "review_games",
+                                                      "game_status", "bot_help"]
     assert "Relajantes" in c.kwargs["system"]
     assert c.kwargs["messages"][0]["content"] == "x"
 
@@ -185,3 +186,28 @@ def test_parse_request_review_games():
                         client=FakeClient(tool_use({"query": " sherlock holmes "}, name="review_games")))
     assert got == Request(kind="review", game="sherlock holmes")
     assert parse_request("x", KNOWN, client=FakeClient(tool_use({}, name="review_games"))).game == ""
+
+
+def test_parse_request_game_status():
+    got = parse_request("dame sus estados", KNOWN, client=FakeClient(tool_use({}, name="game_status")))
+    assert got == Request(kind="status")
+
+
+def test_parse_request_help_source_and_sort():
+    assert parse_request("hola", KNOWN, client=FakeClient(tool_use({"topic": "ayuda"}, name="bot_help"))) \
+        == Request(kind="help", game="ayuda")
+    assert parse_request("gasto", KNOWN, client=FakeClient(tool_use({"topic": "coste"}, name="bot_help"))).game \
+        == "coste"
+    got = parse_request("lo mejor de la familiar", KNOWN,
+                        client=FakeClient(tool_use({"source": "familiar", "sort": "valoracion"})))
+    assert got.source == "familiar" and got.filters.sort == "valoracion"
+    bad = parse_request("x", KNOWN, client=FakeClient(tool_use({"source": "otro", "sort": "azar"})))
+    assert bad.source == "" and bad.filters.sort == "gusto"
+
+
+def test_write_intro_sees_durations():
+    c = FakeClient([SimpleNamespace(type="text", text="Vale.")])
+    write_intro("algo corto", [Recommendation("1", "Corto", 0.5, "x", 4.5, 80),
+                               Recommendation("2", "Raro", 0.5, "y", None, None)], client=c)
+    content = c.kwargs["messages"][0]["content"]
+    assert "Corto: x; dura 4.5 h (historia principal)" in content and "Raro: y; duración desconocida" in content

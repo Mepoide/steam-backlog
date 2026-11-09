@@ -2,8 +2,8 @@ from conftest import make_backlog, make_game
 from recommender import ROWS, Filters, Recommendation, netflix_rows, recommend, top_tags
 
 
-def sc(score, anchor=None, name=None, shared=()):
-    return {"score": score, "sim": 0.0, "quality": 0.0, "anchor_appid": anchor,
+def sc(score, anchor=None, name=None, shared=(), quality=0.0):
+    return {"score": score, "sim": 0.0, "quality": quality, "anchor_appid": anchor,
             "anchor_name": name, "shared_tags": list(shared)}
 
 
@@ -183,3 +183,26 @@ def test_like_appid_ranks_by_similarity_and_explains():
     recs = recommend(Filters(like_appid="ref", limit=3), games, scores, pending("ref", "a", "b", "c"))
     assert ids(recs) == ["a", "b", "c"]  # «ref» no se recomienda a sí mismo
     assert recs[0].reason == "parecido a Ref (comparten Rol, Por turnos)"
+
+
+def test_sort_by_rating_and_duration_and_appids():
+    games = {"a": make_game(hltb_main=30, pos=99, total=1000), "b": make_game(hltb_main=2, pos=60, total=1000),
+             "c": make_game(pos=90, total=1000)}
+    scores = {"a": sc(0.1, quality=0.98), "b": sc(0.9, quality=0.6), "c": sc(0.5, quality=0.89)}
+    backlog = pending("a", "b", "c")
+    assert ids(recommend(Filters(sort="valoracion"), games, scores, backlog)) == ["a", "c", "b"]
+    assert ids(recommend(Filters(sort="duracion"), games, scores, backlog)) == ["b", "a", "c"]
+    assert ids(recommend(Filters(appids=frozenset({"c"})), games, scores, backlog)) == ["c"]
+
+
+def test_sort_with_like_only_reorders_the_most_similar():
+    from recommender import SORT_POOL
+    games = {"ref": make_game("Ref", tags={"Roguelike": 10})}
+    scores = {"ref": sc(0.1)}
+    for i in range(SORT_POOL):  # parecidos y largos
+        games[f"s{i}"] = make_game(tags={"Roguelike": 10}, hltb_main=20 + i)
+        scores[f"s{i}"] = sc(0.5)
+    games["corto"] = make_game(tags={"Carreras": 10}, hltb_main=0.5)  # muy corto pero nada parecido
+    scores["corto"] = sc(0.5)
+    recs = recommend(Filters(like_appid="ref", sort="duracion"), games, scores, pending(*games))
+    assert ids(recs) == ["s0", "s1", "s2"]

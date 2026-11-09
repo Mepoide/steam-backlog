@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, field
 
 import git_sync
+import images
 import llm as llm_module
 import usage
 from config import BACKLOG_CSV, GAMES_JSON, SCORES_JSON
@@ -17,6 +18,14 @@ log = logging.getLogger(__name__)
 ESTADOS_TXT = "pendiente, jugando, terminado, abandonado, descartado"
 CODES = {"p": "pendiente", "j": "jugando", "t": "terminado", "a": "abandonado", "d": "descartado"}
 CODE_OF = {v: k for k, v in CODES.items()}  # en los botones: callback_data ≤ 64 bytes
+ESTADO_EMOJI = {"pendiente": "⏳", "jugando": "🎮", "terminado": "✅", "abandonado": "💤",
+                "descartado": "🚫"}
+
+
+def _estado(estado: str) -> str:
+    """«✅ terminado»: el estado con su emoji, para leerlo de un vistazo."""
+    emoji = ESTADO_EMOJI.get(estado)
+    return f"{emoji} {estado}" if emoji else estado
 NO_DATA = "Aún no hay recomendaciones: ejecuta enrich.py y taste.py (o espera al job diario)."
 RECOMIENDA_LIMIT = 5
 
@@ -27,10 +36,28 @@ class Reply:
     buttons: list[tuple[str, str]] = field(default_factory=list)  # (etiqueta, callback_data)
     shown: list[tuple[str, str]] = field(default_factory=list)  # (appid, nombre) mostrados
     columns: int = 1  # botones por fila
+    photos: list[tuple[str, str]] = field(default_factory=list)  # (url, pie) de las imágenes
 
 
 def _shown(recs: list[Recommendation]) -> list[tuple[str, str]]:
     return [(r.appid, r.name) for r in recs]
+
+
+MAX_PHOTOS = 10  # lo que cabe en un álbum de Telegram
+
+
+def _photos(store: "Store", items: list[tuple[str, str]], numbered: bool = True) -> list[tuple[str, str]]:
+    """Cabecera de cada juego (si la tienda la tiene), con «1. Nombre» como pie."""
+    out = []
+    for i, (appid, name) in enumerate(items, 1):
+        url = images.image_url(store.games.get(appid, {}))
+        if url:
+            out.append((url, f"{i}. {name}" if numbered else name))
+    return out[:MAX_PHOTOS]
+
+
+def _recs_reply(store: "Store", text: str, recs: list[Recommendation]) -> "Reply":
+    return Reply(text, shown=_shown(recs), photos=_photos(store, _shown(recs)))
 
 
 @dataclass
@@ -87,8 +114,9 @@ def cmd_top(store: Store) -> Reply:
     rows = netflix_rows(store.games, store.scores, store.backlog)
     if not rows:
         return Reply(NO_DATA)
-    return Reply("\n\n".join(render(title, recs) for title, recs in rows),
-                 shown=[s for _, recs in rows for s in _shown(recs)])
+    shown = [s for _, recs in rows for s in _shown(recs)]
+    return Reply("\n\n".join(render(title, recs) for title, recs in rows), shown=shown,
+                 photos=_photos(store, shown, numbered=False))
 
 
 def parse_recomienda_args(args: str) -> Filters:
@@ -107,7 +135,7 @@ def cmd_recomienda(store: Store, args: str) -> Reply:
     recs = recommend(parse_recomienda_args(args), store.games, store.scores, store.backlog)
     if not recs:
         return Reply("Nada encaja con esos filtros. Prueba con más horas o sin género.")
-    return Reply(render(None, recs), shown=_shown(recs))
+    return _recs_reply(store, render(None, recs), recs)
 
 
 def _words(s: str) -> list[str]:
@@ -145,7 +173,7 @@ def _entry_line(store: Store, row: dict) -> str:
     g = store.games.get(row["appid"], {})
     total = g.get("reviews_total")
     pct = f"{round(100 * g['reviews_positive'] / total)}" if total else "?"
-    return f"{row['name']} — {row['estado']} · {_hours(g.get('hltb_main'))} h · {pct} % 👍"
+    return f"{row['name']} — {_estado(row['estado'])} · {_hours(g.get('hltb_main'))} h · {pct} % 👍"
 
 
 def cmd_buscar(store: Store, args: str) -> Reply:
@@ -182,7 +210,7 @@ def _origin(lib: dict) -> str:
 def _detail(store: Store, row: dict, hint: bool = True) -> str:
     appid = row["appid"]
     g, lib = store.games.get(appid, {}), store.library.get(appid, {})
-    lines = [f"{row['name']} — {row['estado']}"]
+    lines = [f"{row['name']} — {_estado(row['estado'])}"]
     hours, last = lib.get("hours"), lib.get("last_played")
     played = (f"{hours:.1f} h jugadas" + (f" (última vez {last})" if last else "")) if hours else "Sin jugar"
     origin = _origin(lib)
@@ -209,8 +237,9 @@ def cmd_juego(store: Store, args: str) -> Reply:
     rows = _game_matches(store.backlog, args)
     if not rows:
         return Reply(f"No encuentro «{args.strip()}» en tu biblioteca.")
-    return Reply("\n\n".join(_detail(store, r) for r in rows),
-                 shown=[(r["appid"], r["name"]) for r in rows])
+    shown = [(r["appid"], r["name"]) for r in rows]
+    return Reply("\n\n".join(_detail(store, r) for r in rows), shown=shown,
+                 photos=_photos(store, shown, numbered=False))
 
 
 def cmd_juegos(store: Store, names: list[str], shown: list[tuple[str, str]] = ()) -> Reply:
@@ -225,7 +254,8 @@ def cmd_juegos(store: Store, names: list[str], shown: list[tuple[str, str]] = ()
         elif row not in rows:
             rows.append(row)
     parts = [_detail(store, r) for r in rows] + [f"No encuentro «{m}» en tu biblioteca." for m in missing]
-    return Reply("\n\n".join(parts), shown=[(r["appid"], r["name"]) for r in rows])
+    shown = [(r["appid"], r["name"]) for r in rows]
+    return Reply("\n\n".join(parts), shown=shown, photos=_photos(store, shown, numbered=False))
 
 
 def cmd_parecidos(store: Store, args: str) -> Reply:
@@ -239,23 +269,22 @@ def cmd_parecidos(store: Store, args: str) -> Reply:
                      store.games, store.scores, store.backlog)
     if not recs:
         return Reply(f"No tengo nada sin empezar que se parezca a {ref['name']}.")
-    return Reply(render(f"Lo más parecido a {ref['name']} que no has empezado:", recs),
-                 shown=_shown(recs))
+    return _recs_reply(store, render(f"Lo más parecido a {ref['name']} que no has empezado:", recs), recs)
 
 
-def cmd_mostrados(store: Store, shown: list[tuple[str, str]]) -> Reply:
+def cmd_mostrados(store: Store, shown: list[tuple[str, str]], header: str | None = None) -> Reply:
     """«¿Esos los tengo?»: origen, duración y horas de lo último que se mostró."""
     if not shown:
         return Reply("Aún no te he enseñado ningún juego en esta conversación.")
     estado = {r["appid"]: r["estado"] for r in store.backlog}
     all_owned = all(a in store.library for a, _ in shown)
-    lines = ["Sí, todos están en tu biblioteca:" if all_owned else "Los que te acabo de enseñar:"]
+    lines = [header or ("Sí, todos están en tu biblioteca:" if all_owned else "Los que te acabo de enseñar:")]
     for i, (appid, name) in enumerate(shown, 1):
         lib, g = store.library.get(appid, {}), store.games.get(appid, {})
         parts = [_origin(lib) or "no lo veo en tu biblioteca"]
         if g.get("hltb_main"):
             parts.append(f"dura {_hours(g['hltb_main'])} h")
-        parts += [_played(lib.get("hours")), estado.get(appid, "fuera del backlog")]
+        parts += [_played(lib.get("hours")), _estado(estado.get(appid, "fuera del backlog"))]
         lines.append(f"{i}. {name} — " + " · ".join(parts))
     return Reply("\n".join(lines), shown=shown)
 
@@ -270,7 +299,7 @@ def cmd_recientes(store: Store, limit: int = 10) -> Reply:
     for i, (acq, appid, v) in enumerate(dated, 1):
         origin = "familiar" if v.get("source") == "compartido" else "propio"
         lines.append(f"{i}. {v['name']} — {acq} · {origin} · {_played(v.get('hours'))} · "
-                     f"{estado.get(appid, 'fuera del backlog')}")
+                     f"{_estado(estado.get(appid, 'fuera del backlog'))}")
     return Reply("\n".join(lines), shown=[(appid, v["name"]) for _, appid, v in dated])
 
 
@@ -314,7 +343,7 @@ def plan_marks(store: Store, marks: list[tuple[str, str]],
             missing.append(name)
         elif row["estado"] != estado and row["appid"] not in changes:
             changes[row["appid"]] = estado
-            lines.append(f"• {row['name']}: {row['estado']} → {estado}")
+            lines.append(f"• {row['name']}: {_estado(row['estado'])} → {_estado(estado)}")
     notes = [f"No encuentro «{m}» en el backlog." for m in missing]
     if not changes:
         return Reply("\n".join(notes) or "Ya estaban así; no hay nada que cambiar.")
@@ -351,21 +380,22 @@ def _sync_and_refresh(message: str, sync, refresh) -> str:
 def confirm_marks(pairs: list[tuple[str, str]], backlog_path=BACKLOG_CSV,
                   sync=git_sync.commit_and_push, refresh=None) -> Reply:
     names = {r["appid"]: r["name"] for r in read_backlog(backlog_path)}
-    done = []
+    done, shown = [], []
     for appid, estado in pairs:
         if appid not in names or estado not in ESTADOS:
             continue
         set_estado(appid, estado, backlog_path)
         done.append((names[appid], estado))
+        shown.append((appid, names[appid]))
     if not done:
         return Reply("Ese juego ya no está en el backlog." if len(pairs) == 1
                      else "No he podido marcar ninguno.")
     if len(done) == 1:
         text, msg = f"✓ «{done[0][0]}» marcado como {done[0][1]}.", f"backlog: {done[0][0]} → {done[0][1]}"
     else:
-        text = "✓ Marcados:\n" + "\n".join(f"• {n} → {e}" for n, e in done)
+        text = "✓ Marcados:\n" + "\n".join(f"• {n} → {_estado(e)}" for n, e in done)
         msg = "backlog: " + ", ".join(f"{n} → {e}" for n, e in done)
-    return Reply(text + _sync_and_refresh(msg, sync, refresh))
+    return Reply(text + _sync_and_refresh(msg, sync, refresh), shown=shown)
 
 
 def confirm_mark(appid: str, estado: str, backlog_path=BACKLOG_CSV,
@@ -375,15 +405,19 @@ def confirm_mark(appid: str, estado: str, backlog_path=BACKLOG_CSV,
     return confirm_marks([(appid, estado)], backlog_path, sync, refresh)
 
 
+def _query_rows(store: Store, query: str) -> list[dict]:
+    """Todos los juegos que casan con un nombre o saga, en cualquier estado."""
+    q = fold(query)
+    return ([r for r in store.backlog if q in fold(r["name"])]
+            or _token_matches(store.backlog, query) or find_games(store.backlog, query))
+
+
 def started_pending(store: Store, query: str | None = None) -> list[dict]:
     """Juegos en «pendiente» que ya empezaste, lo jugado hace menos primero.
 
     Con `query` («sherlock holmes») entran todos los pendientes que casen, empezados o no."""
     if query:
-        q = fold(query)
-        rows = ([r for r in store.backlog if q in fold(r["name"])]
-                or _token_matches(store.backlog, query) or find_games(store.backlog, query))
-        rows = [r for r in rows if r["estado"] == "pendiente"]
+        rows = [r for r in _query_rows(store, query) if r["estado"] == "pendiente"]
     else:
         rows = [r for r in store.backlog if r["estado"] == "pendiente"
                 and (store.library.get(r["appid"], {}).get("hours") or 0) >= STARTED_HOURS]
@@ -397,6 +431,11 @@ def started_pending(store: Store, query: str | None = None) -> list[dict]:
 
 REVIEW_BUTTONS = (("Terminado", "t"), ("Jugando", "j"), ("Abandonado", "a"),
                   ("Descartado", "d"), ("Saltar", "s"))
+REVIEW_OVER = "Este repaso ya terminó. Empieza otro con /repasar."
+
+
+def _plural(n: int, one: str, many: str) -> str:
+    return f"{n} {one if n == 1 else many}"
 
 
 def cmd_repasar(store: Store, skip=frozenset(), done: int = 0, query: str | None = None) -> Reply | None:
@@ -409,43 +448,69 @@ def cmd_repasar(store: Store, skip=frozenset(), done: int = 0, query: str | None
     head = f"{what} (quedan {len(rows)}"
     head += f", llevas {done})" if done else ")"
     buttons = [(label, f"rev:{row['appid']}:{code}") for label, code in REVIEW_BUTTONS]
+    shown = [(row["appid"], row["name"])]
     return Reply(f"{head}\n\n{_detail(store, row, hint=False)}", buttons + [("Parar", "rev:stop")],
-                 shown=[(row["appid"], row["name"])], columns=3)
+                 shown=shown, columns=3, photos=_photos(store, shown, numbered=False))
+
+
+def cmd_estados(store: Store, query: str) -> Reply:
+    """Estado actual de los juegos de un nombre o saga (o de varios separados por «;»)."""
+    rows = []
+    for part in [p for p in re.split(r"[;\n]", query) if p.strip()]:
+        rows += [r for r in _query_rows(store, part.strip()) if r not in rows]
+    rows = rows[:15]
+    if not rows:
+        return Reply(f"No encuentro juegos que casen con «{query}».")
+    lines = [f"• {r['name']} — {_estado(r['estado'])}" for r in rows]
+    return Reply("\n".join(lines), shown=[(r["appid"], r["name"]) for r in rows])
 
 
 def start_review(store: Store, state: dict, query: str | None = None) -> Reply:
     query = (query or "").strip() or None
-    state["review_skip"], state["review_done"], state["review_query"] = set(), [], query
+    state.update(review_skip=set(), review_done=[], review_query=query, review_active=True)
     reply = cmd_repasar(store, query=query)
     if reply is not None:
         return reply
+    state["review_active"] = False
     if query:
-        return Reply(f"No tengo juegos en «pendiente» que casen con «{query}».")
+        states = cmd_estados(store, query)
+        if not states.shown:
+            return states
+        return Reply(f"Ya no queda ninguno de «{query}» en «pendiente». Están así:\n{states.text}",
+                     shown=states.shown)
     return Reply("No tienes juegos empezados en «pendiente». Todo al día 👌")
 
 
 def finish_review(state: dict, sync=git_sync.commit_and_push, refresh=None) -> Reply:
     done = state.get("review_done") or []
-    state["review_done"] = []
+    state["review_done"], state["review_active"] = [], False
     if not done:
         return Reply("Repaso terminado; no has cambiado nada.")
-    text = f"Repaso terminado: {len(done)} juegos actualizados."
-    return Reply(text + _sync_and_refresh(f"backlog: repaso ({len(done)} juegos)", sync, refresh))
+    text = (f"Repaso terminado: {_plural(len(done), 'juego actualizado', 'juegos actualizados')}\n"
+            + "\n".join(f"• {name} → {_estado(estado)}" for _, name, estado in done))
+    suffix = _sync_and_refresh(f"backlog: repaso ({_plural(len(done), 'juego', 'juegos')})", sync, refresh)
+    return Reply(text + suffix, shown=[(a, name) for a, name, _ in done])
 
 
 def review_step(data: str, state: dict, backlog_path=BACKLOG_CSV, sync=git_sync.commit_and_push,
                 refresh=None, load=None) -> Reply:
     """Botón del repaso: «rev:<appid>:<código>» marca (sin subir aún) o salta; «rev:stop» acaba.
 
-    Los cambios se suben a GitHub de una vez al terminar, no uno por botón."""
+    Los cambios se suben a GitHub de una vez al terminar, no uno por botón. Un segundo
+    toque sobre un juego ya atendido, o sobre un repaso terminado, no hace nada."""
+    if not state.get("review_active"):
+        return Reply(REVIEW_OVER)
     _, appid, code = (data.split(":", 2) + ["", ""])[:3]
     if appid != "stop":
-        if code == "s":
-            state.setdefault("review_skip", set()).add(appid)
-        elif code in CODES and set_estado(appid, CODES[code], backlog_path):
-            state.setdefault("review_done", []).append(appid)
-        nxt = cmd_repasar((load or load_store)(), state.get("review_skip", set()),
-                          len(state.get("review_done") or []), state.get("review_query"))
+        done = state.setdefault("review_done", [])
+        skip = state.setdefault("review_skip", set())
+        if appid not in skip and all(a != appid for a, _, _ in done):
+            if code == "s":
+                skip.add(appid)
+            elif code in CODES and set_estado(appid, CODES[code], backlog_path):
+                name = next((r["name"] for r in read_backlog(backlog_path) if r["appid"] == appid), appid)
+                done.append((appid, name, CODES[code]))
+        nxt = cmd_repasar((load or load_store)(), skip, len(done), state.get("review_query"))
         if nxt is not None:
             return nxt
     return finish_review(state, sync, refresh)
@@ -494,11 +559,22 @@ def free_text(store: Store, text: str, llm=llm_module, history: list[dict] | Non
             return Reply(NO_DATA)
         why = ("Este mes ya se ha gastado el presupuesto de IA (/coste)"
                if isinstance(e, llm_module.BudgetExceeded) else "No he podido usar la IA ahora mismo")
-        return Reply(f"{why}; aquí van tus recomendaciones de siempre:\n\n" + render(None, recs),
-                     shown=_shown(recs))
+        return _recs_reply(store, f"{why}; aquí van tus recomendaciones de siempre:\n\n"
+                           + render(None, recs), recs)
     if request.kind == "game":
         log.info("Texto libre «%s» → fichas de %s", text, request.games)
         return cmd_juegos(store, request.games, _last_shown(history))
+    if request.kind == "status":
+        log.info("Texto libre «%s» → estados «%s»", text, request.game)
+        found = cmd_estados(store, request.game) if request.game else None
+        if found is not None and found.shown:
+            return found
+        if _last_shown(history):  # «sus estados»: los últimos que se mostraron
+            return cmd_mostrados(store, _last_shown(history), header="Así están:")
+        return found or Reply("¿De qué juegos? Dime un nombre o una saga.")
+    if request.kind == "help":
+        log.info("Texto libre «%s» → %s", text, request.game)
+        return cmd_coste() if request.game == "coste" else cmd_ayuda()
     if request.kind == "review":
         log.info("Texto libre «%s» → repaso «%s»", text, request.game)
         return start_review(store, state if state is not None else {}, request.game)
@@ -512,6 +588,9 @@ def free_text(store: Store, text: str, llm=llm_module, history: list[dict] | Non
         log.info("Texto libre «%s» → lo mostrado antes", text)
         return cmd_mostrados(store, _last_shown(history))
     filters, note = request.filters, ""
+    if request.source:
+        wanted = "compartido" if request.source == "familiar" else "propio"
+        filters.appids = frozenset(a for a, v in store.library.items() if v.get("source") == wanted)
     if request.game:
         ref = _resolve(store, request.game, _last_shown(history))
         if ref is None:
@@ -519,16 +598,18 @@ def free_text(store: Store, text: str, llm=llm_module, history: list[dict] | Non
         else:
             filters.like_appid = ref["appid"]
     recs = recommend(filters, *args)
-    log.info("Texto libre «%s» → %s → %s", text, filters, [r.name for r in recs])
+    log.info("Texto libre «%s» → %s%s%s → %s", text, filters,
+             f" like={request.game!r}" if request.game else "",
+             f" origen={request.source}" if request.source else "", [r.name for r in recs])
     if not recs:
         recs = recommend(Filters(limit=filters.limit), *args)
         if not recs:
             return Reply(NO_DATA)
-        return Reply(f"{note}No he encontrado nada exacto; esto es lo que más te encaja en general:\n\n"
-                     + render(None, recs), shown=_shown(recs))
+        return _recs_reply(store, f"{note}No he encontrado nada exacto; esto es lo que más te encaja "
+                           "en general:\n\n" + render(None, recs), recs)
     try:
         intro = llm.write_intro(text, recs)
     except llm.LLMError as e:
         log.warning("LLM (write_intro) falló: %s", e)
-        return Reply(note + render(None, recs), shown=_shown(recs))
-    return Reply(f"{note}{intro}\n\n{render(None, recs)}", shown=_shown(recs))
+        return _recs_reply(store, note + render(None, recs), recs)
+    return _recs_reply(store, f"{note}{intro}\n\n{render(None, recs)}", recs)
