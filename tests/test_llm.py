@@ -4,7 +4,7 @@ import anthropic
 import httpx2 as httpx
 import pytest
 
-from llm import MODEL, LLMError, Request, parse_request, write_intro
+from llm import MODEL, LLMError, Request, Turn, parse_request, write_intro
 from recommender import Filters, Recommendation
 
 KNOWN = ["Relajantes", "Roguelike", "Estrategia", "Terror"]
@@ -51,7 +51,8 @@ def test_parse_request_forces_a_tool_and_model():
     parse_request("x", KNOWN, client=c)
     assert c.kwargs["model"] == MODEL
     assert c.kwargs["tool_choice"] == {"type": "any"}
-    assert [t["name"] for t in c.kwargs["tools"]] == ["set_filters", "game_info", "recent_games"]
+    assert [t["name"] for t in c.kwargs["tools"]] == ["set_filters", "game_info", "recent_games",
+                                                      "mark_games", "last_results"]
     assert "Relajantes" in c.kwargs["system"]
     assert c.kwargs["messages"][0]["content"] == "x"
 
@@ -73,11 +74,35 @@ def test_parse_request_game_info_without_name_falls_back_to_recommend():
     assert got.kind == "recommend"
 
 
-def test_parse_request_sends_previous_message_as_context():
+def test_parse_request_sends_history_as_context():
     c = FakeClient(tool_use({}))
-    parse_request("¿y de estrategia?", KNOWN, client=c, previous="algo corto")
-    content = c.kwargs["messages"][0]["content"]
-    assert "algo corto" in content and content.endswith("Mensaje actual: ¿y de estrategia?")
+    history = [Turn("/juego sherlock", ["Sherlock Holmes Chapter One", "Sherlock Holmes The Awakened"]),
+               Turn("algo corto")]
+    parse_request("márcalos", KNOWN, client=c, history=history)
+    assert c.kwargs["messages"][0]["content"] == (
+        "Conversación reciente (solo contexto):\n"
+        "Usuario: /juego sherlock\n"
+        "Bot mostró: Sherlock Holmes Chapter One; Sherlock Holmes The Awakened\n"
+        "Usuario: algo corto\n"
+        "Mensaje actual: márcalos")
+
+
+def test_parse_request_mark_games_validates_and_caps():
+    games = [{"name": " Celeste ", "estado": "terminado"}, {"name": "X", "estado": "odiado"},
+             {"name": "", "estado": "jugando"}, "basura"] + [{"name": f"G{i}", "estado": "jugando"}
+                                                            for i in range(9)]
+    got = parse_request("x", KNOWN, client=FakeClient(tool_use({"games": games}, name="mark_games")))
+    assert got.kind == "mark" and got.marks[0] == ("Celeste", "terminado") and len(got.marks) == 5
+    empty = parse_request("x", KNOWN, client=FakeClient(tool_use({"games": []}, name="mark_games")))
+    assert empty.kind == "recommend"
+
+
+def test_parse_request_last_results_and_like_game():
+    assert parse_request("¿esos los tengo?", KNOWN,
+                         client=FakeClient(tool_use({}, name="last_results"))).kind == "last"
+    got = parse_request("algo como BG3", KNOWN,
+                        client=FakeClient(tool_use({"like_game": " Baldur's Gate 3 "})))
+    assert got.kind == "recommend" and got.game == "Baldur's Gate 3"
 
 
 def test_parse_request_without_tool_call_raises():

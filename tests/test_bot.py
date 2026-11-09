@@ -6,8 +6,8 @@ from bot import build_application
 def test_build_application_registers_commands():
     app = build_application("123:ABC", 42)
     cmds = {c for h in app.handlers[0] if isinstance(h, CommandHandler) for c in h.commands}
-    assert cmds == {"start", "ayuda", "top", "recomienda", "buscar", "juego", "recientes",
-                    "marcar", "coste"}
+    assert cmds == {"start", "ayuda", "top", "recomienda", "buscar", "juego", "parecidos",
+                    "recientes", "marcar", "repasar", "coste"}
 
 
 def test_build_application_has_text_callback_and_unauthorized_handlers():
@@ -94,3 +94,33 @@ def test_other_errors_keep_traceback(caplog):
     with caplog.at_level("ERROR", logger="bot"):
         asyncio.run(on_error(None, SimpleNamespace(error=ValueError("x"))))
     assert caplog.records[0].exc_info is not None
+
+
+def test_remember_keeps_last_turns():
+    from bot import HISTORY, remember
+    from commands import Reply
+    data = {}
+    for i in range(HISTORY + 2):
+        remember(data, f"m{i}", Reply("x", shown=[(str(i), f"G{i}")]))
+    assert [h["user"] for h in data["history"]] == [f"m{i}" for i in range(2, HISTORY + 2)]
+
+
+def test_markup_columns():
+    from bot import _markup
+    from commands import Reply
+    m = _markup(Reply("x", [(str(i), str(i)) for i in range(5)], columns=3))
+    assert [len(r) for r in m.inline_keyboard] == [3, 2]
+    assert _markup(Reply("x")) is None
+
+
+def test_callback_reply_routes(monkeypatch):
+    import commands
+    from bot import callback_reply
+    seen = []
+    monkeypatch.setattr(commands, "confirm_marks", lambda pairs, refresh=None: seen.append(pairs) or
+                        commands.Reply("ok"))
+    monkeypatch.setattr(commands, "review_step", lambda data, state, refresh=None: commands.Reply(data))
+    assert callback_reply("marks:6=t", {}).text == "ok" and seen == [[("6", "terminado")]]
+    assert callback_reply("marks:", {}).text == "Botón no válido."
+    assert callback_reply("rev:6:t", {}).text == "rev:6:t"
+    assert callback_reply("cancel", {}).text == "Cancelado."

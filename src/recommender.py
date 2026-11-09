@@ -7,6 +7,8 @@ import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field
 
+from taste import cosine, idf_weights, tag_vector
+
 
 @dataclass
 class Filters:
@@ -16,6 +18,7 @@ class Filters:
     min_positive: float | None = None  # 0-1
     min_reviews: int | None = None
     limit: int = 3
+    like_appid: str | None = None  # «parecido a X»: ordena por similitud de tags con ese juego
 
 
 @dataclass
@@ -49,6 +52,8 @@ MIN_TAG_SHARE = 0.25  # un tag cuenta si pesa al menos esto respecto al tag prin
 GENRE_SHARE = 0.5  # los géneros de la tienda no tienen peso: cuentan como un tag medio
 RELEVANCE_WEIGHT = 0.5  # con tags pedidos, el orden mezcla gusto (score) y cuánto encaja
 STARTED_HOURS = 2.0  # con estas horas jugadas ya no es una sugerencia nueva, aunque siga «pendiente»
+LIKE_WEIGHT = 0.7  # con «parecido a X», cuánto pesa parecerse a X frente a tu gusto general
+LIKE_TAGS_WEIGHT = 0.15  # y cuánto los tags que pidas además («rol por turnos parecido a X»)
 
 
 def tag_share(entry: dict, term: str) -> float:
@@ -121,11 +126,17 @@ def _reason(score: dict, pct: int | None) -> str:
     return "sin datos de reseñas"
 
 
-def _to_rec(appid: str, entry: dict, score: dict, fallback_name: str) -> Recommendation:
+def _like_reason(ref_name: str, ref: dict, vec: dict) -> str:
+    common = sorted((t for t in vec if t in ref), key=lambda t: vec[t] * ref[t], reverse=True)[:2]
+    return f"parecido a {ref_name}" + (f" (comparten {', '.join(common)})" if common else "")
+
+
+def _to_rec(appid: str, entry: dict, score: dict, fallback_name: str,
+            reason: str | None = None) -> Recommendation:
     pos = _positive(entry)
     pct = round(pos * 100) if pos is not None else None
     return Recommendation(appid=appid, name=entry.get("name") or fallback_name,
-                          score=score["score"], reason=_reason(score, pct),
+                          score=score["score"], reason=reason or _reason(score, pct),
                           hours=entry.get("hltb_main"), positive_pct=pct,
                           tags=[t for t, _ in sorted((entry.get("tags") or {}).items(),
                                                      key=lambda kv: -kv[1])[:5]])
@@ -133,29 +144,43 @@ def _to_rec(appid: str, entry: dict, score: dict, fallback_name: str) -> Recomme
 
 def _select(f: Filters, games: dict, scores: dict, backlog: list[dict],
             exclude: set[str] = frozenset()) -> list[Recommendation]:
-    candidates = []
+    ref = idf = None
+    if f.like_appid:
+        idf = idf_weights(games)
+        ref = tag_vector(games.get(f.like_appid, {}), idf=idf)
+        ref_name = games.get(f.like_appid, {}).get("name") or f.like_appid
+    candidates = []  # (score, appid, entry, nombre, base, motivo)
     for row in backlog:
         appid = row["appid"]
         if row["estado"] != "pendiente" or appid in exclude or appid not in scores:
             continue
-        if (scores[appid].get("played_hours") or 0) >= STARTED_HOURS:
+        if appid == f.like_appid or (scores[appid].get("played_hours") or 0) >= STARTED_HOURS:
             continue
         entry = games.get(appid, {})
-        if _passes(f, entry):
-            candidates.append((scores[appid], appid, entry, row["name"]))
+        if not _passes(f, entry):
+            continue
+        base, reason = scores[appid]["score"], None
+        if ref:
+            vec = tag_vector(entry, idf=idf)
+            base = LIKE_WEIGHT * cosine(ref, vec) + (1 - LIKE_WEIGHT) * base
+            reason = _like_reason(ref_name, ref, vec)
+        candidates.append((scores[appid], appid, entry, row["name"], base, reason))
 
     def rank(c) -> tuple[int, float]:
         if not f.include_tags:
-            return 0, c[0]["score"]
+            return 0, c[4]
+        if ref:  # con «parecido a X» manda X; los tags filtran y suman un poco
+            return 0, (1 - LIKE_TAGS_WEIGHT) * c[4] + LIKE_TAGS_WEIGHT * relevance(c[2], f.include_tags)
         # Primero los que cumplen más tags pedidos; dentro, gusto + relevancia.
         hits = sum(matches(c[2], t) for t in f.include_tags)
-        return hits, (1 - RELEVANCE_WEIGHT) * c[0]["score"] + RELEVANCE_WEIGHT * relevance(c[2], f.include_tags)
+        return hits, (1 - RELEVANCE_WEIGHT) * c[4] + RELEVANCE_WEIGHT * relevance(c[2], f.include_tags)
 
     candidates.sort(key=rank, reverse=True)
 
     picked, skipped, anchors = [], [], set()
     for c in candidates:
-        anchor = c[0].get("anchor_appid")
+        # Variedad: no repetir el mismo «porque jugaste X» (con «parecido a» no se usa).
+        anchor = None if ref else c[0].get("anchor_appid")
         if anchor is not None and anchor in anchors:
             skipped.append(c)
             continue
@@ -165,7 +190,7 @@ def _select(f: Filters, games: dict, scores: dict, backlog: list[dict],
         if len(picked) == f.limit:
             break
     picked += skipped[: f.limit - len(picked)]
-    return [_to_rec(appid, entry, s, name) for s, appid, entry, name in picked]
+    return [_to_rec(appid, entry, s, name, reason) for s, appid, entry, name, _, reason in picked]
 
 
 def recommend(filters: Filters, games: dict, scores: dict, backlog: list[dict]) -> list[Recommendation]:

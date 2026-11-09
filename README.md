@@ -9,6 +9,9 @@ Solo se versiona `backlog.csv` (appid, nombre, estado, prioridad, notas).
 Nada de claves, SteamIDs ni horas de juego en git: los datos crudos y
 derivados viven en `data/`, que está ignorado.
 
+Cómo funciona por dentro (arquitectura, módulos y algoritmos de perfil y
+recomendación): [docs/arquitectura.md](docs/arquitectura.md).
+
 ## Instalación
 
 ```bash
@@ -55,7 +58,9 @@ O todo de una vez, más el commit/push de `backlog.csv`: `scripts/daily.sh`.
   `--limit N` para probar con pocos, `--refresh` para rehacerlo todo.
 - `taste.py` construye tu perfil (horas × tags, con más peso a lo jugado en
   los últimos 6 meses) y puntúa cada juego pendiente con su motivo
-  ("porque jugaste X").
+  ("porque jugaste X"). El estado también cuenta: lo `terminado` pesa ×1.5,
+  lo que estás `jugando` ×1.2, y lo `abandonado` o `descartado` resta (y nunca
+  sale como "porque jugaste X"). El bot lo recalcula al marcar juegos.
 
 Edita `backlog.csv` a mano o desde el bot: estado
 (`pendiente|jugando|terminado|abandonado|descartado`), prioridad (1–5) y notas.
@@ -80,15 +85,26 @@ Comandos:
 - `/buscar <texto>`: busca en el backlog y muestra estado, duración y reseñas.
 - `/juego <nombre>`: ficha del juego: horas jugadas, última partida, fecha de
   compra (o de llegada a la biblioteca familiar), duración, reseñas y tags.
+- `/parecidos <juego>`: lo que no has empezado que más se parece a ese juego
+  (similitud de tags, pesando más los tags poco comunes).
 - `/recientes [n]`: lo último que ha llegado a tu biblioteca, por fecha.
 - `/marcar <juego> <estado>`: pide confirmación con botones, actualiza
   `backlog.csv` y hace commit + push.
+- `/repasar`: va enseñando, uno a uno, los juegos que ya empezaste (≥ 2 h) y
+  siguen en «pendiente», lo último jugado primero, con botones Terminado /
+  Jugando / Abandonado / Descartado / Saltar. Los cambios se suben a GitHub de
+  una vez al pulsar Parar o al acabar (si lo dejas a medias, los sube el job diario).
 - `/coste`: llamadas, tokens y dólares gastados en IA este mes, frente al tope.
 - Texto libre: Claude decide si preguntas por un juego («cuánto he jugado al
   Hades» → ficha), por lo último que has comprado («qué he comprado hace poco»
-  → recientes) o qué jugar («algo tranquilo, estoy quemado» → filtros, el
-  recomendador elige y Claude escribe una frase de introducción). Claude nunca
-  elige los juegos. Tiene en cuenta tu mensaje anterior («¿y de estrategia?»).
+  → recientes), por lo que te acaba de enseñar («¿esos los tengo?» → origen,
+  duración y horas de esa lista), si cuentas cómo te va con juegos («me he
+  pasado el Awakened, el Chapter One me aburre» → cambios de estado con un
+  botón para confirmar) o qué jugar («algo tranquilo, estoy quemado», «rol por
+  turnos parecido al Baldur's Gate 3» → filtros, el recomendador elige y Claude
+  escribe una frase de introducción). Claude nunca elige los juegos. Recuerda
+  los 3 últimos turnos y los juegos que mostró en cada uno, así que entiende
+  «¿y de estrategia?», «los dos últimos» o «márcalos».
 - No se recomiendan juegos con 2 h o más jugadas aunque sigan en «pendiente»
   (el backlog nace con todo en «pendiente»; márcalos con `/marcar` cuando quieras). Con tags pedidos, el orden mezcla tu gusto con
   cuánto pesa cada tag en el juego, así que «tipo granja» no saca un juego que

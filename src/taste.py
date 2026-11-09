@@ -22,6 +22,9 @@ RECENT_BOOST = 1.5
 PRIOR_POSITIVE = 0.75
 PRIOR_WEIGHT = 50
 W_SIM, W_QUALITY = 0.7, 0.3
+# Lo que dices de un juego pesa en tu perfil: lo terminado cuenta más que unas horas
+# sueltas, y lo que dejaste o descartaste resta (no es «porque jugaste X»).
+ESTADO_WEIGHT = {"terminado": 1.5, "jugando": 1.2, "abandonado": -0.5, "descartado": -0.5}
 
 
 def _raw_vector(entry: dict, top_n: int = TOP_TAGS) -> dict[str, float]:
@@ -64,18 +67,20 @@ def cosine(a: dict, b: dict) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
-def _weight(p: Playtime, today: date) -> float:
+def _weight(p: Playtime, today: date, estado: str | None = None) -> float:
     recent = p.last_played is not None and p.last_played >= today - timedelta(days=RECENT_DAYS)
-    return math.log1p(p.hours) * (RECENT_BOOST if recent else 1.0)
+    return math.log1p(p.hours) * (RECENT_BOOST if recent else 1.0) * ESTADO_WEIGHT.get(estado, 1.0)
 
 
 def build_profile(games: dict, playtime: dict[str, Playtime], today: date,
-                  idf: dict[str, float] | None = None) -> dict[str, float]:
+                  idf: dict[str, float] | None = None,
+                  estados: dict[str, str] | None = None) -> dict[str, float]:
+    estados = estados or {}
     profile: dict[str, float] = {}
     for appid, p in playtime.items():
         if p.hours <= 0 or appid not in games:
             continue
-        w = _weight(p, today)
+        w = _weight(p, today, estados.get(appid))
         for tag, tw in tag_vector(games[appid], idf=idf).items():
             profile[tag] = profile.get(tag, 0.0) + w * tw
     norm = math.sqrt(sum(v * v for v in profile.values()))
@@ -91,8 +96,9 @@ def quality(entry: dict) -> float:
 
 def score_pending(games: dict, playtime: dict[str, Playtime], backlog: list[dict],
                   profile: dict[str, float], idf: dict[str, float] | None = None) -> dict[str, dict]:
+    disliked = {r["appid"] for r in backlog if ESTADO_WEIGHT.get(r["estado"], 1.0) < 0}
     played = [(a, tag_vector(games[a], idf=idf), math.log1p(p.hours))
-              for a, p in playtime.items() if p.hours > 0 and a in games]
+              for a, p in playtime.items() if p.hours > 0 and a in games and a not in disliked]
     scores = {}
     for row in backlog:
         appid = row["appid"]
@@ -123,19 +129,29 @@ def score_pending(games: dict, playtime: dict[str, Playtime], backlog: list[dict
     return scores
 
 
-def main() -> None:
+def refresh() -> tuple[int, int]:
+    """Recalcula perfil y puntuaciones (job diario y tras marcar juegos en el bot)."""
     for path in (RAW_CSV, GAMES_JSON):
         if not path.exists():
-            sys.exit(f"No existe {path}. Ejecuta antes export.py y enrich.py.")
+            raise FileNotFoundError(f"No existe {path}. Ejecuta antes export.py y enrich.py.")
     games = json.loads(GAMES_JSON.read_text(encoding="utf-8"))
     playtime = load_playtime()
     backlog = read_backlog()
     idf = idf_weights(games)
-    profile = build_profile(games, playtime, date.today(), idf=idf)
+    estados = {r["appid"]: r["estado"] for r in backlog}
+    profile = build_profile(games, playtime, date.today(), idf=idf, estados=estados)
     scores = score_pending(games, playtime, backlog, profile, idf=idf)
     atomic_write_json(PROFILE_JSON, dict(sorted(profile.items(), key=lambda kv: -kv[1])))
     atomic_write_json(SCORES_JSON, scores)
-    print(f"✓ perfil con {len(profile)} tags, {len(scores)} pendientes puntuados")
+    return len(profile), len(scores)
+
+
+def main() -> None:
+    try:
+        tags, scored = refresh()
+    except FileNotFoundError as e:
+        sys.exit(str(e))
+    print(f"✓ perfil con {tags} tags, {scored} pendientes puntuados")
 
 
 if __name__ == "__main__":

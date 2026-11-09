@@ -135,3 +135,13 @@ def test_scores_include_played_hours():
     playtime["p1"] = pt(3.5)
     assert score_pending(games, playtime, backlog, build_profile(games, playtime, TODAY))["p1"][
         "played_hours"] == 3.5
+
+
+def test_estado_weights_profile_and_anchors():
+    games = {"x": make_game(tags={"A": 10}), "y": make_game(tags={"B": 10}), "z": make_game(tags={"B": 10})}
+    playtime = {"x": pt(10), "y": pt(10)}
+    p = build_profile(games, playtime, TODAY, estados={"x": "terminado", "y": "abandonado"})
+    assert p["A"] > 0 > p["B"]
+    backlog = make_backlog(("x", "X", "terminado"), ("y", "Y", "abandonado"), ("z", "Z", "pendiente"))
+    scores = score_pending(games, playtime, backlog, p)
+    assert scores["z"]["anchor_appid"] is None  # nunca «porque jugaste» algo que dejaste
