@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 
 UA = "steam-backlog"
 HLTB_MIN_SIMILARITY = 0.6
@@ -24,6 +25,8 @@ ICON_CDN = "https://shared.akamai.steamstatic.com/community_assets/images/apps/{
 # capsule 616×353, small 231×87, portrait 600×900 (biblioteca), hero 1920×620.
 ASSET_FIELDS = {"header": "header", "capsule": "main_capsule", "small": "small_capsule",
                 "portrait": "library_capsule", "hero": "library_hero"}
+# platforms.steam_deck_compat_category de GetItems.
+DECK_UNKNOWN, DECK_UNSUPPORTED, DECK_PLAYABLE, DECK_VERIFIED = 0, 1, 2, 3
 
 
 class SourceError(Exception):
@@ -106,7 +109,8 @@ def parse_items(payload: dict, tag_names: dict[int, str]) -> dict:
         item = payload["response"]["store_items"][0]
     except (KeyError, IndexError, TypeError) as e:
         raise SourceError("GetItems inesperado") from e
-    out = {"tags": {}, "reviews_positive": None, "reviews_total": None, "images": {}}
+    out = {"tags": {}, "reviews_positive": None, "reviews_total": None, "images": {},
+           "deck": None, "early_access": False, "coming_soon": False, "release_date": None}
     if item.get("success") != 1:
         return out  # appid inexistente o retirado: no es un fallo reintentable
     for t in item.get("tags") or []:
@@ -119,7 +123,22 @@ def parse_items(payload: dict, tag_names: dict[int, str]) -> dict:
         out["reviews_total"] = total
         out["reviews_positive"] = round(total * int(summary.get("percent_positive", 0)) / 100)
     out["images"] = parse_assets(item)
+    out.update(parse_release(item))
     return out
+
+
+def parse_release(item: dict) -> dict:
+    """Compatibilidad con Steam Deck, acceso anticipado y fecha de salida en Steam."""
+    release = item.get("release") or {}
+    deck = (item.get("platforms") or {}).get("steam_deck_compat_category")
+    ts = release.get("steam_release_date")
+    return {
+        "deck": int(deck) if deck is not None else None,
+        "early_access": bool(item.get("is_early_access") or release.get("is_early_access")),
+        "coming_soon": bool(item.get("is_coming_soon") or release.get("is_coming_soon")),
+        "release_date": (datetime.fromtimestamp(int(ts), timezone.utc).date().isoformat()
+                         if ts else None),
+    }
 
 
 def clean_name(name: str) -> str:
@@ -149,7 +168,8 @@ def fetch_items(appid: str, name: str) -> dict:
         "ids": [{"appid": int(appid)}],
         "context": {"language": "spanish", "country_code": "ES"},
         "data_request": {"include_tag_count": ITEMS_TAG_COUNT, "include_reviews": True,
-                         "include_assets": True},
+                         "include_assets": True, "include_platforms": True,
+                         "include_release": True},
     }, separators=(",", ":"))
     url = ITEMS_URL.format(q=urllib.parse.quote(q))
     return parse_items(_get_json(url, _STEAM_API), _tag_names())

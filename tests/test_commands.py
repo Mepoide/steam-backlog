@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -565,3 +566,76 @@ def test_replies_carry_header_photos():
 def started_store_with(s):
     s.library["7"]["hours"] = 5.0
     return s
+
+
+def deck_store():
+    s = store()
+    for appid, deck in (("5", 3), ("6", 1), ("7", 2), ("8", 0)):
+        s.games[appid]["deck"] = deck
+    return s
+
+
+def test_render_marks_deck_and_early_access():
+    recs = [Recommendation("1", "A", 0.9, "x", 5, 90, deck=3),
+            Recommendation("2", "B", 0.9, "y", None, 74, deck=2, early_access=True),
+            Recommendation("3", "C", 0.9, "z", 5, 90, deck=0)]
+    text = render(None, recs)
+    assert "1. A — 5.0 h · 90 % 👍 · Deck ✅\n" in text
+    assert "2. B — ? h · 74 % 👍 · Deck 🟡 · acceso anticipado\n" in text
+    assert "3. C — 5.0 h · 90 % 👍\n" in text
+
+
+def test_detail_shows_deck_and_release():
+    s = store()
+    s.games["5"].update(deck=2, early_access=True, release_date="2026-03-12")
+    s.games["8"].update(deck=3, release_date="2018-01-25")
+    assert "En acceso anticipado desde 2026-03-12 · Steam Deck: 🟡 jugable" in cmd_juego(s, "hades").text
+    assert "Salió el 2018-01-25 · Steam Deck: ✅ verificado" in cmd_juego(s, "celeste").text
+    s.games["7"].update(coming_soon=True, release_date="2027-02-01")
+    assert "Aún no ha salido (prevista para 2027-02-01)" in cmd_juego(s, "stardew").text
+
+
+def test_free_text_deck_filter_once_does_not_save(tmp_path, monkeypatch):
+    monkeypatch.setattr("commands.PREFS_JSON", tmp_path / "prefs.json")
+    s = deck_store()
+    req = real_llm.Request(filters=Filters(limit=5), deck="jugable")
+    reply = free_text(s, "para la deck", llm=fake_llm(request=req))
+    assert [n for _, n in reply.shown] == ["Hades", "Stardew Valley"]
+    assert not (tmp_path / "prefs.json").exists() and s.deck is None
+
+
+def test_free_text_deck_remember_saves_and_applies_later(tmp_path, monkeypatch):
+    path = tmp_path / "prefs.json"
+    monkeypatch.setattr("commands.PREFS_JSON", path)
+    s = deck_store()
+    req = real_llm.Request(filters=Filters(limit=5), deck="verificado", remember=True)
+    reply = free_text(s, "ya sabes que tienen que ir en la deck", llm=fake_llm(request=req))
+    assert reply.text.startswith("Apuntado: a partir de ahora solo te recomiendo juegos "
+                                 "verificados para Steam Deck")
+    assert [n for _, n in reply.shown] == ["Hades"]
+    assert json.loads(path.read_text()) == {"deck": "verificado"}
+    # Una petición que no habla de la Deck usa la preferencia guardada, y /top también.
+    later = free_text(s, "algo", llm=fake_llm(request=real_llm.Request(filters=Filters(limit=5))))
+    assert [n for _, n in later.shown] == ["Hades"]
+    assert cmd_top(s).text.startswith("(solo verificados para Steam Deck)")
+    # «Da igual la Deck» de una vez no la borra; con remember, sí.
+    once = free_text(s, "da igual", llm=fake_llm(request=real_llm.Request(
+        filters=Filters(limit=5), deck="cualquiera")))
+    assert len(once.shown) == 4 and s.deck == "verificado"
+    off = free_text(s, "olvida lo de la deck", llm=fake_llm(request=real_llm.Request(
+        filters=Filters(limit=5), deck="cualquiera", remember=True)))
+    assert off.text.startswith("Apuntado: vuelvo a recomendarte sin mirar la Steam Deck.")
+    assert json.loads(path.read_text()) == {} and s.deck is None
+
+
+def test_free_text_limits_explains_what_bot_cannot_see():
+    reply = free_text(store(), "foto de lo instalado en la deck",
+                      llm=fake_llm(request=real_llm.Request(kind="help", game="limites")))
+    assert reply.text.startswith("Eso no lo puedo saber: Steam no comparte qué tienes instalado")
+
+
+def test_mostrados_shows_deck_mark():
+    s = deck_store()
+    text = cmd_mostrados(s, [("5", "Hades"), ("8", "Celeste")]).text
+    assert "1. Hades — biblioteca familiar, disponible desde 2021-07-01 · dura 24 h · Deck ✅ ·" in text
+    assert "Deck" not in text.splitlines()[2]

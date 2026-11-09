@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from enrich_sources import (SourceError, clean_name, parse_assets, parse_items, parse_store, parse_tag_list,
+from enrich_sources import (SourceError, clean_name, parse_assets, parse_items, parse_release, parse_store, parse_tag_list,
                             pick_hltb)
 
 FIX = Path(__file__).parent / "fixtures"
@@ -36,6 +36,31 @@ def test_parse_tag_list():
     assert all(isinstance(k, int) and isinstance(v, str) for k, v in names.items())
 
 
+NO_RELEASE = {"deck": None, "early_access": False, "coming_soon": False, "release_date": None}
+
+
+def test_parse_release_deck_early_access_and_date():
+    item = {"is_early_access": True,
+            "platforms": {"windows": True, "steam_deck_compat_category": 2},
+            "release": {"steam_release_date": 1773324148, "is_early_access": True}}
+    assert parse_release(item) == {"deck": 2, "early_access": True, "coming_soon": False,
+                                   "release_date": "2026-03-12"}
+
+
+def test_parse_release_released_game():
+    item = {"platforms": {"steam_deck_compat_category": 3},
+            "release": {"steam_release_date": 1600353507}}
+    out = parse_release(item)
+    assert out["deck"] == 3 and out["early_access"] is False and out["release_date"] == "2020-09-17"
+
+
+def test_parse_items_includes_release():
+    payload = {"response": {"store_items": [{"success": 1, "is_early_access": True,
+                                             "platforms": {"steam_deck_compat_category": 1}}]}}
+    out = parse_items(payload, {})
+    assert out["deck"] == 1 and out["early_access"] is True
+
+
 def test_parse_items_real_fixture():
     out = parse_items(load("items_1145360.json"), tag_names())
     assert len(out["tags"]) > 5
@@ -54,13 +79,13 @@ def test_parse_items_skips_unknown_tagids():
 def test_parse_items_without_tags_or_reviews():
     payload = {"response": {"store_items": [{"success": 1}]}}
     assert parse_items(payload, {}) == {"tags": {}, "reviews_positive": None, "reviews_total": None,
-                                        "images": {}}
+                                        "images": {}, **NO_RELEASE}
 
 
 def test_parse_items_not_found_is_empty_not_error():
     payload = {"response": {"store_items": [{"id": 1, "success": 2}]}}
     assert parse_items(payload, {}) == {"tags": {}, "reviews_positive": None, "reviews_total": None,
-                                        "images": {}}
+                                        "images": {}, **NO_RELEASE}
 
 
 def test_parse_items_bad_payload_raises():

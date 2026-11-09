@@ -206,3 +206,29 @@ def test_sort_with_like_only_reorders_the_most_similar():
     scores["corto"] = sc(0.5)
     recs = recommend(Filters(like_appid="ref", sort="duracion"), games, scores, pending(*games))
     assert ids(recs) == ["s0", "s1", "s2"]
+
+
+def deck_games():
+    return {"v": {**make_game("V"), "deck": 3}, "p": {**make_game("P"), "deck": 2},
+            "x": {**make_game("X"), "deck": 1}, "u": {**make_game("U"), "deck": 0},
+            "n": make_game("N")}
+
+
+def test_deck_filter_playable_and_verified():
+    games, scores = deck_games(), {k: sc(0.5) for k in "vpxun"}
+    backlog = pending(*"vpxun")
+    assert set(ids(recommend(Filters(deck="jugable", limit=9), games, scores, backlog))) == {"v", "p"}
+    assert ids(recommend(Filters(deck="verificado", limit=9), games, scores, backlog)) == ["v"]
+    assert len(recommend(Filters(limit=9), games, scores, backlog)) == 5
+
+
+def test_recommendation_carries_deck_and_early_access():
+    games = {"a": {**make_game("A"), "deck": 2, "early_access": True}}
+    [r] = recommend(Filters(), games, {"a": sc(0.5)}, pending("a"))
+    assert r.deck == 2 and r.early_access is True
+
+
+def test_netflix_rows_apply_deck():
+    games, scores = deck_games(), {k: sc(0.5) for k in "vpxun"}
+    rows = netflix_rows(games, scores, pending(*"vpxun"), deck="verificado")
+    assert [a for _, recs in rows for a in ids(recs)] == ["v"]

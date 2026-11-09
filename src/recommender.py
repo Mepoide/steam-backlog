@@ -5,7 +5,7 @@ Módulo puro: no sabe nada de Telegram ni del LLM (lo reutilizará la web).
 import re
 import unicodedata
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from taste import cosine, idf_weights, tag_vector
 
@@ -21,6 +21,7 @@ class Filters:
     like_appid: str | None = None  # «parecido a X»: ordena por similitud de tags con ese juego
     appids: frozenset[str] | None = field(default=None, repr=False)  # p. ej. solo los familiares
     sort: str = "gusto"  # "gusto" | "valoracion" (reseñas) | "duracion" (más cortos primero)
+    deck: str | None = None  # "verificado" | "jugable" (verificado o jugable) en Steam Deck
 
 
 @dataclass
@@ -32,6 +33,8 @@ class Recommendation:
     hours: float | None
     positive_pct: int | None
     tags: list[str] = field(default_factory=list)  # principales, para que la intro no invente
+    deck: int | None = None  # categoría de Steam Deck (DECK_* de enrich_sources)
+    early_access: bool = False
 
     @property
     def url(self) -> str:
@@ -50,6 +53,7 @@ def fold(s: str) -> str:
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
 
+DECK_MIN = {"verificado": 3, "jugable": 2}  # categoría mínima de Steam Deck por filtro
 MIN_TAG_SHARE = 0.25  # un tag cuenta si pesa al menos esto respecto al tag principal del juego
 GENRE_SHARE = 0.5  # los géneros de la tienda no tienen peso: cuentan como un tag medio
 RELEVANCE_WEIGHT = 0.5  # con tags pedidos, el orden mezcla gusto (score) y cuánto encaja
@@ -100,6 +104,8 @@ def _multiplayer_only(entry: dict) -> bool:
 
 
 def _passes(f: Filters, entry: dict) -> bool:
+    if f.deck in DECK_MIN and (entry.get("deck") or 0) < DECK_MIN[f.deck]:
+        return False  # sin probar (0) o no compatible (1) no pasan
     if f.max_hours is not None:
         hours = entry.get("hltb_main")
         if hours is None or hours > f.max_hours:
@@ -142,7 +148,8 @@ def _to_rec(appid: str, entry: dict, score: dict, fallback_name: str,
                           score=score["score"], reason=reason or _reason(score, pct),
                           hours=entry.get("hltb_main"), positive_pct=pct,
                           tags=[t for t, _ in sorted((entry.get("tags") or {}).items(),
-                                                     key=lambda kv: -kv[1])[:5]])
+                                                     key=lambda kv: -kv[1])[:5]],
+                          deck=entry.get("deck"), early_access=bool(entry.get("early_access")))
 
 
 def _select(f: Filters, games: dict, scores: dict, backlog: list[dict],
@@ -212,10 +219,11 @@ def recommend(filters: Filters, games: dict, scores: dict, backlog: list[dict]) 
     return _select(filters, games, scores, backlog)
 
 
-def netflix_rows(games: dict, scores: dict, backlog: list[dict]) -> list[tuple[str, list[Recommendation]]]:
+def netflix_rows(games: dict, scores: dict, backlog: list[dict],
+                 deck: str | None = None) -> list[tuple[str, list[Recommendation]]]:
     rows, used = [], set()
     for title, f in ROWS:
-        recs = _select(f, games, scores, backlog, exclude=used)
+        recs = _select(replace(f, deck=deck), games, scores, backlog, exclude=used)
         used.update(r.appid for r in recs)
         if recs:
             rows.append((title, recs))

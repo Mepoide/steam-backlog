@@ -1,6 +1,8 @@
 from collections import Counter
 
-from enrich import SOURCES, enrich_all
+from datetime import date
+
+from enrich import EMPTY, SOURCES, enrich_all
 from enrich_sources import RateLimited, SourceError
 
 STORE = {"genres": ["Acción"], "categories": ["Un jugador"], "metacritic": 90}
@@ -41,7 +43,8 @@ def test_sources_are_store_items_hltb():
 def test_new_game_gets_all_sources_merged():
     f = Fakes()
     cache = enrich_all({"1": "Uno"}, {}, f.fetchers())
-    assert cache["1"] == {"name": "Uno", **STORE, **ITEMS, **HLTB, "images": {}, "missing": []}
+    assert cache["1"] == {"name": "Uno", **EMPTY, **STORE, **ITEMS, **HLTB, "missing": [],
+                          "items_at": date.today().isoformat()}
 
 
 def test_complete_cached_entry_not_refetched():
@@ -110,10 +113,30 @@ def test_name_updated_from_library():
     assert cache["1"]["name"] == "Uno (renombrado)"
 
 
-def test_cached_entry_without_images_refetches_items_only():
+def test_cached_entry_without_items_date_refetches_items_only():
     f = Fakes()
     cache = enrich_all({"1": "Uno"}, {}, f.fetchers())
-    del cache["1"]["images"]
+    del cache["1"]["items_at"]
     f2 = Fakes()
     enrich_all({"1": "Uno"}, cache, f2.fetchers())
     assert f2.total() == 1 and f2.total("items") == 1
+    assert cache["1"]["items_at"] == date.today().isoformat()
+
+
+def test_items_refetched_after_max_age_only():
+    f = Fakes()
+    cache = enrich_all({"1": "Uno"}, {}, f.fetchers(), today=date(2026, 11, 1))
+    f2 = Fakes()
+    enrich_all({"1": "Uno"}, cache, f2.fetchers(), today=date(2026, 11, 20))
+    assert f2.total() == 0
+    enrich_all({"1": "Uno"}, cache, f2.fetchers(), today=date(2026, 12, 1))
+    assert f2.total() == 1 and f2.total("items") == 1
+    assert cache["1"]["items_at"] == "2026-12-01"
+
+
+def test_failed_items_keeps_old_date():
+    f = Fakes()
+    cache = enrich_all({"1": "Uno"}, {}, f.fetchers(), today=date(2026, 10, 1))
+    enrich_all({"1": "Uno"}, cache, Fakes(fail={"items": SourceError("x")}).fetchers(),
+               today=date(2026, 11, 9))
+    assert cache["1"]["items_at"] == "2026-10-01" and cache["1"]["missing"] == ["items"]
