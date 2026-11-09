@@ -12,6 +12,7 @@ SCORES_JSON = ENRICHED_DIR / "scores.json"
 PLAYTIME_CACHE = ENRICHED_DIR / "playtime_cache.json"
 LLM_USAGE = DATA_DIR / "llm_usage.jsonl"
 IMAGES_DIR = DATA_DIR / "images"
+PREFS_JSON = DATA_DIR / "prefs.json"  # preferencias del chat que sobreviven a reinicios
 BACKLOG_CSV = ROOT / "backlog.csv"
 
 

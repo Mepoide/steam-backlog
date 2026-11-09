@@ -12,6 +12,7 @@ import argparse
 import csv
 import json
 import sys
+from datetime import date
 from typing import Callable
 
 from config import GAMES_JSON, RAW_CSV
@@ -19,9 +20,13 @@ from enrich_sources import RateLimited, SourceError, fetch_hltb, fetch_items, fe
 from library import atomic_write_json
 
 SOURCES = ("store", "items", "hltb")
+# La compatibilidad con Steam Deck y el acceso anticipado cambian (Valve vuelve a probar
+# juegos, los early access salen a 1.0): «items» se vuelve a pedir pasado este tiempo.
+ITEMS_MAX_AGE_DAYS = 30
 EMPTY = {
     "genres": [], "categories": [], "metacritic": None,
     "tags": {}, "reviews_positive": None, "reviews_total": None, "images": {},
+    "deck": None, "early_access": False, "coming_soon": False, "release_date": None,
     "hltb_main": None, "hltb_extra": None,
 }
 
@@ -30,18 +35,28 @@ def _new_entry(name: str) -> dict:
     return {"name": name, **json.loads(json.dumps(EMPTY)), "missing": list(SOURCES)}
 
 
+def _items_stale(entry: dict, today: date) -> bool:
+    try:
+        fetched = date.fromisoformat(entry.get("items_at") or "")
+    except ValueError:
+        return True  # cachés de antes de guardar la fecha
+    return (today - fetched).days >= ITEMS_MAX_AGE_DAYS
+
+
 def enrich_all(games: dict[str, str], cache: dict,
                fetchers: dict[str, Callable[[str, str], dict]],
                refresh: bool = False, limit: int | None = None,
-               save: Callable[[dict], None] = lambda c: None, save_every: int = 25) -> dict:
+               save: Callable[[dict], None] = lambda c: None, save_every: int = 25,
+               today: date | None = None) -> dict:
+    today = today or date.today()
     blocked: set[str] = set()
     processed = 0
     for appid, name in games.items():
         entry = cache.get(appid)
         if entry is not None:
             entry["name"] = name
-            if "images" not in entry and "items" not in entry["missing"]:
-                entry["missing"].append("items")  # cachés de antes de las imágenes: se completan
+            if _items_stale(entry, today) and "items" not in entry["missing"]:
+                entry["missing"].append("items")
         needs_work = entry is None or refresh or bool(entry["missing"])
         if not needs_work:
             continue
@@ -57,6 +72,8 @@ def enrich_all(games: dict[str, str], cache: dict,
                 continue
             try:
                 entry.update(fetchers[source](appid, name))
+                if source == "items":
+                    entry["items_at"] = today.isoformat()
             except RateLimited as e:
                 print(f"  ⚠ {source}: límite de peticiones ({e}); la dejo para la próxima")
                 blocked.add(source)

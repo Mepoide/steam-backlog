@@ -113,6 +113,7 @@ data/                            ← todo ignorado
 ├── enriched/
 │   ├── games.json               ← por appid: géneros, categorías, tags{nombre: peso},
 │   │                              reseñas, hltb_main/extra, images{tipo: URL},
+│   │                              deck, early_access, release_date, items_at,
 │   │                              fuentes que faltan
 │   ├── playtime_cache.json      ← horas de juegos que desaparecen del export
 │   ├── profile.json             ← vector de gusto {tag: peso}
@@ -120,6 +121,7 @@ data/                            ← todo ignorado
 │                                  compartidos y horas jugadas
 ├── raw/export_status.json       ← si el último export pudo leer la biblioteca familiar
 ├── images/<appid>/<tipo>.jpg    ← caché local de imágenes de la tienda (para la web)
+├── prefs.json                   ← preferencias del chat (p. ej. {"deck": "jugable"})
 ├── llm_usage.jsonl              ← una línea por llamada a Claude con tokens y coste
 ├── logs/{daily,bot}.log
 └── .git.lock                    ← candado entre el job y el bot
@@ -308,7 +310,7 @@ sequenceDiagram
 | Fuente | Datos | Ritmo |
 |---|---|---|
 | `store.steampowered.com/api/appdetails` (`l=spanish`) | géneros, categorías («Un jugador»…), metacritic | 1 petición cada 1,5 s |
-| `IStoreBrowseService/GetItems` + `GetTagList` | hasta 20 tags **con peso** y en español, reseñas (total y % positivo) e **imágenes** (`include_assets`) | 1 por segundo |
+| `IStoreBrowseService/GetItems` + `GetTagList` | hasta 20 tags **con peso** y en español, reseñas (total y % positivo), **imágenes** (`include_assets`), compatibilidad con **Steam Deck** (`include_platforms`), acceso anticipado y fecha de salida (`include_release`) | 1 por segundo |
 | HowLongToBeat (`howlongtobeatpy`) | horas de la historia principal y con extras | 1 por segundo |
 
 - Hay una **caché incremental**: cada entrada guarda en `missing` las fuentes
@@ -323,7 +325,12 @@ sequenceDiagram
   `asset_url_format` con la versión (`?t=…`). Se guardan como URLs absolutas de
   la CDN de Steam (`shared.akamai.steamstatic.com`): `header` 460×215, `capsule`
   616×353, `small` 231×87, `portrait` 600×900, `hero` 1920×620 e `icon` 32×32.
-  Las entradas de caché anteriores a las imágenes vuelven a pedir solo `items`.
+- **Steam Deck y salida.** `platforms.steam_deck_compat_category` da 0 sin
+  probar, 1 no compatible, 2 jugable y 3 verificado. `is_early_access`,
+  `is_coming_soon` y `steam_release_date` dicen si ya ha salido. Como Valve
+  vuelve a probar juegos y los acceso anticipado acaban saliendo, `items` se
+  vuelve a pedir cada 30 días (`items_at` guarda la fecha). Las entradas sin
+  `items_at` lo piden en la siguiente ejecución.
 
 ### 3.3 Perfil de gusto (`taste.py`)
 
@@ -400,6 +407,7 @@ rasgo relevante del juego y no un tag residual.
 | `exclude_tags` | No casa ninguno |
 | `min_positive`, `min_reviews` | Umbrales sobre las reseñas |
 | `appids` | Solo esos juegos. El texto libre lo usa para «de la biblioteca familiar» o «de los míos» |
+| `deck` | `jugable`: categoría ≥ 2 (jugables y verificados). `verificado`: solo 3. Los juegos sin probar no pasan |
 
 **Orden:**
 
@@ -426,6 +434,13 @@ el juego de referencia.
 **Filas de `/top`.** «Para ti», «Sesión corta (≤ 5 h)» y «Joyas valoradas
 (≥ 90 %, ≥ 500 reseñas)». Cada fila excluye lo que ya salió en las anteriores.
 
+**Preferencia de Steam Deck.** Si el usuario la plantea como norma («ya sabes
+que tienen que ir en la Deck», «a partir de ahora»), se guarda en
+`data/prefs.json` y se aplica a todo: texto libre, `/top`, `/recomienda` y
+`/parecidos`. Una mención puntual («hoy estoy en el PC») solo cambia esa
+petición. «Olvida lo de la Deck» la borra. Con la preferencia activa, `/top`
+lo dice en la primera línea.
+
 ### 3.6 Texto libre con Claude (`llm.py`)
 
 Se hace una llamada de **parseo** con `tool_choice: any`, que obliga a usar una
@@ -433,14 +448,14 @@ de las ocho herramientas y no a contestar en prosa:
 
 | Herramienta | Cuándo | Resultado |
 |---|---|---|
-| `set_filters` | Qué jugar, géneros, duración, «parecido a X», origen (`source`), orden (`sort`) | `Request(kind="recommend", filters, game=X, source)` |
+| `set_filters` | Qué jugar, géneros, duración, «parecido a X», origen (`source`), orden (`sort`), Steam Deck (`deck`, y `remember` si es norma) | `Request(kind="recommend", filters, game=X, source, deck, remember)` |
 | `game_info` | Pregunta por uno o varios juegos concretos | una ficha por juego (hasta 5) |
 | `review_games` | «Repasemos los de Sherlock Holmes» | repaso con botones, filtrado por nombre |
 | `recent_games` | Qué ha llegado a la biblioteca hace poco | lista por fecha de adquisición |
 | `mark_games` | «Me he pasado X», «Y me aburre», «márcalos» | cambios de estado que se confirman con un botón |
 | `last_results` | «¿Esos los tengo?», «¿cuánto duran?» | origen, duración y horas de lo último mostrado |
 | `game_status` | «Dame sus estados», «¿cómo tengo los de Sherlock?» | estado de los juegos de un nombre o saga; sin nombre (o si no casa), los últimos mostrados o tocados con botones |
-| `bot_help` | Saludos, «qué puedes hacer», «cuánto llevo gastado» | la ayuda o `/coste` |
+| `bot_help` | Saludos, «qué puedes hacer», «cuánto llevo gastado», o algo que el bot no puede saber (`limites`: lo instalado en la Deck, espacio, logros, amigos, precios) | la ayuda, `/coste` o qué puede y qué no puede ver |
 
 - **Contexto.** El prompt de sistema incluye **todos** los tags conocidos (331),
   para que el modelo copie nombres reales y no los invente. El mensaje del
@@ -457,8 +472,10 @@ de las ocho herramientas y no a contestar en prosa:
   juegos que se acaban de mostrar (nombre exacto o contenido) y después en todo
   el backlog.
 - **Intro.** Una segunda llamada con `effort: low` escribe 1-2 frases sobre la
-  lista ya elegida. Recibe la duración y los tags de cada juego para no
-  inventar, y se le quitan las viñetas si intenta repetir la lista.
+  lista ya elegida. Recibe la duración, los tags, la compatibilidad con Steam
+  Deck y si está en acceso anticipado de cada juego, con la orden de no afirmar
+  nada que no esté ahí (antes llegó a decir «se pueden jugar en Steam Deck» sin
+  tener el dato). Se le quitan las viñetas si intenta repetir la lista.
 - **Confirmación.** Cambiar estados siempre pide confirmación con un botón. El
   LLM propone y el usuario confirma.
 
@@ -505,6 +522,7 @@ Steam, así que el bot no guarda nada:
 | Varias fichas | álbum y, debajo, las fichas |
 | Repaso | la cabecera del juego con la ficha y los botones; al pulsar, la foto se cambia en el mismo mensaje (`edit_media`) |
 | Estados y cambios | emoji por estado: ⏳ pendiente · 🎮 jugando · ✅ terminado · 💤 abandonado · 🚫 descartado |
+| Steam Deck y salida | en las listas, «Deck ✅» (verificado), «Deck 🟡» (jugable) o «Deck ⛔», y «acceso anticipado»; en la ficha, «En acceso anticipado desde …» o «Salió el …» y «Steam Deck: …» |
 
 Si Telegram rechaza una imagen, se envía solo el texto: las imágenes adornan,
 nunca impiden responder. Si un botón cambia el tipo de mensaje (de foto a
@@ -579,7 +597,7 @@ biblioteca y viven en `data/` (ignorado), nunca en el repositorio público.
 
 ## 6. Pruebas
 
-`pytest` (unos 190 tests) sin red:
+`pytest` (unos 210 tests) sin red:
 
 - **Fuentes:** respuestas grabadas en `tests/fixtures/`.
 - **LLM:** un cliente falso que devuelve llamadas a herramientas. Se comprueban
@@ -606,6 +624,8 @@ antes de cada entrega.
 - La memoria de la conversación vive en RAM y se pierde al reiniciar el bot.
 - Las opiniones («me gustan») no se guardan como tales: solo influyen a través
   del estado. Podrían guardarse en la columna `notas`.
+- Steam no expone qué hay instalado en cada equipo ni en la Deck: el bot lo
+  explica en vez de inventarlo.
 - Las duraciones de HLTB faltan en algunos juegos (aparecen como «? h») y esos
   juegos no pasan el filtro de duración.
 - Una interfaz web reutilizaría `commands`, `recommender`, `taste` e `images` sin

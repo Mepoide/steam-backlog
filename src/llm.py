@@ -40,6 +40,13 @@ FILTERS_TOOL = {
             "sort": {"type": "string", "enum": ["gusto", "valoracion", "duracion"],
                      "description": ("Orden: gusto (por defecto), valoracion (mejor valorados por "
                                      "reseñas) o duracion (más cortos primero).")},
+            "deck": {"type": "string", "enum": ["jugable", "verificado", "cualquiera"],
+                     "description": ("Compatibilidad con Steam Deck, si la menciona: jugable (verificados "
+                                     "o jugables), verificado (solo verificados) o cualquiera (quitar "
+                                     "esa condición).")},
+            "remember": {"type": "boolean",
+                         "description": ("true si plantea lo de Steam Deck como norma para siempre "
+                                         "(«ya sabes que tienen que...», «a partir de ahora», «siempre»).")},
         },
         "additionalProperties": False,
     },
@@ -68,14 +75,16 @@ MARK_TOOL = {
 LAST_TOOL = {
     "name": "last_results",
     "description": ("Preguntas sobre los juegos que el bot acaba de mostrar: si los tiene, si son "
-                    "propios o de la biblioteca familiar, cuánto duran, cuánto los ha jugado."),
+                    "propios o de la biblioteca familiar, cuánto duran, cuánto los ha jugado, si "
+                    "van en Steam Deck."),
     "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
 }
 
 GAME_TOOL = {
     "name": "game_info",
     "description": ("Ficha de juegos concretos de su biblioteca: horas jugadas, última partida, "
-                    "fecha de compra, duración, reseñas y tags. Para preguntas sobre juegos que nombra."),
+                    "fecha de compra, duración, reseñas, tags, compatibilidad con Steam Deck, si "
+                    "está en acceso anticipado y cuándo salió. Para preguntas sobre juegos que nombra."),
     "input_schema": {
         "type": "object",
         "properties": {"names": {"type": "array", "items": {"type": "string"},
@@ -101,11 +110,12 @@ STATUS_TOOL = {
 
 HELP_TOOL = {
     "name": "bot_help",
-    "description": ("Preguntas sobre el propio bot: saludos, qué puede hacer, cómo se usa (ayuda) o "
-                    "cuánto lleva gastado en IA (coste)."),
+    "description": ("Preguntas sobre el propio bot: saludos, qué puede hacer, cómo se usa (ayuda), "
+                    "cuánto lleva gastado en IA (coste) o algo que el bot no puede saber (limites): "
+                    "qué tiene instalado o descargado, espacio libre, logros, amigos, precios."),
     "input_schema": {
         "type": "object",
-        "properties": {"topic": {"type": "string", "enum": ["ayuda", "coste"]}},
+        "properties": {"topic": {"type": "string", "enum": ["ayuda", "coste", "limites"]}},
         "required": ["topic"],
         "additionalProperties": False,
     },
@@ -136,7 +146,8 @@ RECENT_TOOL = {
 
 PARSE_SYSTEM = """Atiendes a un jugador que pregunta por su biblioteca de Steam.
 Llama siempre a UNA herramienta:
-- game_info si pregunta por juegos concretos (cuánto los ha jugado, qué tal son, cuánto duran...);
+- game_info si pregunta por juegos concretos (cuánto los ha jugado, qué tal son, cuánto duran,
+  si ya han salido o siguen en acceso anticipado, si van en Steam Deck...);
   pon cada juego que nombre por separado y con su nombre completo («awakened» de Sherlock
   Holmes → «Sherlock Holmes The Awakened»); la saga sola no es un juego.
 - review_games solo si quiere ponerse a clasificar o cambiar el estado de sus juegos uno a uno
@@ -150,7 +161,9 @@ Llama siempre a UNA herramienta:
   pendiente (aún quiere jugarlo). Incluye todos los que mencione, cada uno con su estado.
 - last_results si pregunta algo sobre los juegos que el bot acaba de mostrar
   («¿esos los tengo?», «¿cuánto duran?», «¿cuáles son de la familiar?»).
-- bot_help si saluda sin pedir nada, pregunta qué puede hacer el bot o cuánto ha gastado en IA.
+- bot_help si saluda sin pedir nada, pregunta qué puede hacer el bot o cuánto ha gastado en IA;
+  y con topic limites si pide algo que el bot no puede ver: lo que tiene instalado o descargado
+  (en la Steam Deck o el PC), espacio libre, logros, amigos o precios.
 - set_filters para todo lo demás: qué jugar, recomendaciones, géneros, duraciones.
 Te doy la conversación reciente para entender el mensaje actual: «¿y de estrategia?» sigue
 recomendando; si el actual aclara o corrige el anterior («fecha de compra me refiero» tras
@@ -163,6 +176,12 @@ Reglas de set_filters:
 - like_game: si pide algo «parecido a», «como» o «del estilo de» un juego, pon su nombre.
 - source: «de la biblioteca familiar» / «de los compartidos» → familiar; «de los míos» → propio.
 - sort: «el mejor valorado», «lo mejor que tengo» → valoracion; «lo más corto» → duracion.
+- deck: «para la Steam Deck», «que vaya en la Deck» → jugable; «verificados para Deck» → verificado;
+  «da igual la Deck», «para el PC» → cualquiera. remember=true si lo plantea como norma
+  permanente, para ponerla («ya sabes que tienen que ser compatibles con la Steam Deck», «a partir
+  de ahora», «siempre») o para quitarla («olvida lo de la Deck», «ya no juego en la Deck»); para
+  una sola vez («hoy estoy en el PC») sin remember. La Deck se suma a lo demás que pida:
+  «algo corto para la deck» → deck jugable y además max_hours (p. ej. 10).
 - Traduce lo que pide a tags usando SOLO esta lista (copia los nombres tal cual):
 {tags}
 - En include_tags pon de 1 a 3 tags, los más específicos que describan la petición
@@ -178,9 +197,13 @@ INTRO_SYSTEM = """Eres el bot de backlog de Steam de un jugador. Escribe en espa
 introducción de una o dos frases, cercana, a la lista de juegos que se va a mostrar justo
 debajo. La lista son recomendaciones de juegos que aún no ha empezado, elegidas por su
 gusto y los filtros de la petición: no digas que es otra cosa ni inventes datos sobre
-ellos. Si algún juego no encaja con lo pedido, dilo con naturalidad. No nombres ningún
-juego que no esté en la lista ni hables de lo que puedes o no puedes hacer. Sin listas
-ni formato."""
+ellos: no afirmes nada (por ejemplo que van en Steam Deck o que ya han salido) que no
+diga el listado. Si algún juego no encaja con lo pedido, dilo con naturalidad. No nombres
+ningún juego que no esté en la lista ni hables de lo que puedes o no puedes hacer. Sin
+listas ni formato."""
+
+DECK_TEXT = {3: "verificado en Steam Deck", 2: "jugable en Steam Deck",
+             1: "no compatible con Steam Deck", 0: "sin probar en Steam Deck"}
 
 
 @dataclass
@@ -193,6 +216,8 @@ class Request:
     limit: int = 10
     marks: list[tuple[str, str]] = field(default_factory=list)  # (nombre, estado)
     source: str = ""  # "propio" | "familiar" (filtro de recomendación)
+    deck: str = ""  # "jugable" | "verificado" | "cualquiera" | "" (no lo menciona)
+    remember: bool = False  # guardar lo de la Deck como preferencia permanente
 
 
 @dataclass
@@ -296,7 +321,8 @@ def parse_request(text: str, known_tags: list[str], client=None,
         if names:
             return Request(kind="game", games=names[:MAX_GAMES])
     if call.name == "bot_help":
-        return Request(kind="help", game="coste" if inp.get("topic") == "coste" else "ayuda")
+        topic = inp.get("topic")
+        return Request(kind="help", game=topic if topic in ("coste", "limites") else "ayuda")
     if call.name in ("review_games", "game_status"):
         query = inp.get("query")
         return Request(kind="review" if call.name == "review_games" else "status",
@@ -312,14 +338,18 @@ def parse_request(text: str, known_tags: list[str], client=None,
     filters = _filters(inp, known_tags)
     if inp.get("sort") in ("valoracion", "duracion"):
         filters.sort = inp["sort"]
+    deck = inp.get("deck") if inp.get("deck") in ("jugable", "verificado", "cualquiera") else ""
     return Request(filters=filters, game=like.strip() if isinstance(like, str) else "",
-                   source=inp.get("source") if inp.get("source") in ("propio", "familiar") else "")
+                   source=inp.get("source") if inp.get("source") in ("propio", "familiar") else "",
+                   deck=deck, remember=bool(deck) and inp.get("remember") is True)
 
 
 def write_intro(text: str, recs: list[Recommendation], client=None) -> str:
     listing = "\n".join(
         f"- {r.name}: {r.reason}"
         + (f"; dura {r.hours:.1f} h (historia principal)" if r.hours else "; duración desconocida")
+        + (f"; {DECK_TEXT[r.deck]}" if r.deck in DECK_TEXT else "; sin datos de Steam Deck")
+        + ("; en acceso anticipado" if r.early_access else "")
         + (f"; tags: {', '.join(r.tags)}" if r.tags else "")
         for r in recs)
     resp = _create(

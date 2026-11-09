@@ -9,8 +9,8 @@ import git_sync
 import images
 import llm as llm_module
 import usage
-from config import BACKLOG_CSV, GAMES_JSON, SCORES_JSON
-from library import ESTADOS, read_backlog, read_library, set_estado
+from config import BACKLOG_CSV, GAMES_JSON, PREFS_JSON, SCORES_JSON
+from library import ESTADOS, atomic_write_json, read_backlog, read_library, set_estado
 from recommender import (STARTED_HOURS, Filters, Recommendation, fold, netflix_rows, recommend,
                          top_tags)
 
@@ -26,6 +26,14 @@ def _estado(estado: str) -> str:
     """«✅ terminado»: el estado con su emoji, para leerlo de un vistazo."""
     emoji = ESTADO_EMOJI.get(estado)
     return f"{emoji} {estado}" if emoji else estado
+
+
+# Categoría de Steam Deck (enrich_sources.DECK_*) → texto de la ficha y marca corta de las listas.
+DECK_LABEL = {3: "✅ verificado", 2: "🟡 jugable", 1: "⛔ no compatible", 0: "❔ sin probar"}
+DECK_MARK = {3: "Deck ✅", 2: "Deck 🟡", 1: "Deck ⛔"}
+DECK_PREF_TEXT = {"jugable": "jugables en Steam Deck (verificados o jugables)",
+                  "verificado": "verificados para Steam Deck"}
+
 NO_DATA = "Aún no hay recomendaciones: ejecuta enrich.py y taste.py (o espera al job diario)."
 RECOMIENDA_LIMIT = 5
 
@@ -66,6 +74,11 @@ class Store:
     scores: dict
     backlog: list[dict]
     library: dict = field(default_factory=dict)  # export crudo: origen, horas y fechas
+    prefs: dict = field(default_factory=dict)  # preferencias guardadas (p. ej. {"deck": "jugable"})
+
+    @property
+    def deck(self) -> str | None:
+        return self.prefs.get("deck") if self.prefs.get("deck") in DECK_PREF_TEXT else None
 
 
 def _load_json(path) -> dict:
@@ -74,7 +87,19 @@ def _load_json(path) -> dict:
 
 def load_store() -> Store:
     return Store(games=_load_json(GAMES_JSON), scores=_load_json(SCORES_JSON),
-                 backlog=read_backlog(BACKLOG_CSV), library=read_library())
+                 backlog=read_backlog(BACKLOG_CSV), library=read_library(),
+                 prefs=_load_json(PREFS_JSON))
+
+
+def save_deck_pref(store: Store, deck: str | None, path=None) -> None:
+    """Guarda (o quita, con None) la preferencia de Steam Deck."""
+    prefs = dict(store.prefs)
+    if deck in DECK_PREF_TEXT:
+        prefs["deck"] = deck
+    else:
+        prefs.pop("deck", None)
+    atomic_write_json(path or PREFS_JSON, prefs)
+    store.prefs = prefs
 
 
 def _hours(h: float | None) -> str:
@@ -87,7 +112,10 @@ def render(title: str | None, recs: list[Recommendation]) -> str:
     lines = [title] if title else []
     for i, r in enumerate(recs, 1):
         pct = "?" if r.positive_pct is None else r.positive_pct
-        lines += [f"{i}. {r.name} — {_hours(r.hours)} h · {pct} % 👍", f"   {r.reason}", f"   {r.url}"]
+        extra = "".join(f" · {m}" for m in (DECK_MARK.get(r.deck),
+                                            "acceso anticipado" if r.early_access else None) if m)
+        lines += [f"{i}. {r.name} — {_hours(r.hours)} h · {pct} % 👍{extra}", f"   {r.reason}",
+                  f"   {r.url}"]
     return "\n".join(lines)
 
 
@@ -106,17 +134,32 @@ def cmd_ayuda() -> Reply:
         "(o solo los de un nombre o saga)\n"
         "/coste — lo que lleva gastado la IA este mes\n\n"
         "O escríbeme sin comando: «algo tranquilo, estoy quemado», «algo como Hades», "
-        "«me he pasado el Celeste»."
+        "«me he pasado el Celeste», «a partir de ahora, solo cosas que vayan en la Steam Deck»."
     )
 
 
+def cmd_limites() -> Reply:
+    return Reply(
+        "Eso no lo puedo saber: Steam no comparte qué tienes instalado o descargado (ni en la "
+        "Steam Deck ni en el PC), el espacio libre, tus logros ni tus amigos.\n\n"
+        "Sí veo tu biblioteca (propia y familiar), tus horas y fechas, y de cada juego su "
+        "duración, reseñas, tags, si va en Steam Deck y si está en acceso anticipado. "
+        "Prueba «¿el Solasta II va en la Deck?» o «algo corto para la Deck»."
+    )
+
+
+def _deck_note(deck: str | None) -> str:
+    return f"(solo {DECK_PREF_TEXT[deck]})" if deck in DECK_PREF_TEXT else ""
+
+
 def cmd_top(store: Store) -> Reply:
-    rows = netflix_rows(store.games, store.scores, store.backlog)
+    rows = netflix_rows(store.games, store.scores, store.backlog, deck=store.deck)
     if not rows:
         return Reply(NO_DATA)
     shown = [s for _, recs in rows for s in _shown(recs)]
-    return Reply("\n\n".join(render(title, recs) for title, recs in rows), shown=shown,
-                 photos=_photos(store, shown, numbered=False))
+    note = _deck_note(store.deck)
+    return Reply((note + "\n\n" if note else "") + "\n\n".join(render(title, recs) for title, recs in rows),
+                 shown=shown, photos=_photos(store, shown, numbered=False))
 
 
 def parse_recomienda_args(args: str) -> Filters:
@@ -132,7 +175,9 @@ def parse_recomienda_args(args: str) -> Filters:
 
 
 def cmd_recomienda(store: Store, args: str) -> Reply:
-    recs = recommend(parse_recomienda_args(args), store.games, store.scores, store.backlog)
+    f = parse_recomienda_args(args)
+    f.deck = store.deck
+    recs = recommend(f, store.games, store.scores, store.backlog)
     if not recs:
         return Reply("Nada encaja con esos filtros. Prueba con más horas o sin género.")
     return _recs_reply(store, render(None, recs), recs)
@@ -207,6 +252,15 @@ def _origin(lib: dict) -> str:
     return ""
 
 
+def _release(g: dict) -> str:
+    date = g.get("release_date")
+    if g.get("coming_soon"):
+        return "Aún no ha salido" + (f" (prevista para {date})" if date else "")
+    if g.get("early_access"):
+        return "En acceso anticipado" + (f" desde {date}" if date else "")
+    return f"Salió el {date}" if date else ""
+
+
 def _detail(store: Store, row: dict, hint: bool = True) -> str:
     appid = row["appid"]
     g, lib = store.games.get(appid, {}), store.library.get(appid, {})
@@ -224,6 +278,10 @@ def _detail(store: Store, row: dict, hint: bool = True) -> str:
     tags = sorted((g.get("tags") or {}).items(), key=lambda kv: -kv[1])[:6]
     if tags:
         lines.append("Tags: " + ", ".join(t for t, _ in tags))
+    release = _release(g)
+    deck = DECK_LABEL.get(g.get("deck"))
+    if release or deck:
+        lines.append(" · ".join(x for x in (release, f"Steam Deck: {deck}" if deck else "") if x))
     if hint and row["estado"] == "pendiente" and (hours or 0) >= STARTED_HOURS:
         lines.append(f"Sigue en «pendiente» y no te lo recomiendo: /marcar {row['name']} jugando "
                      "(o terminado)")
@@ -265,7 +323,7 @@ def cmd_parecidos(store: Store, args: str) -> Reply:
     if not rows:
         return Reply(f"No encuentro «{args.strip()}» en tu biblioteca.")
     ref = rows[0]
-    recs = recommend(Filters(like_appid=ref["appid"], limit=RECOMIENDA_LIMIT),
+    recs = recommend(Filters(like_appid=ref["appid"], limit=RECOMIENDA_LIMIT, deck=store.deck),
                      store.games, store.scores, store.backlog)
     if not recs:
         return Reply(f"No tengo nada sin empezar que se parezca a {ref['name']}.")
@@ -284,6 +342,8 @@ def cmd_mostrados(store: Store, shown: list[tuple[str, str]], header: str | None
         parts = [_origin(lib) or "no lo veo en tu biblioteca"]
         if g.get("hltb_main"):
             parts.append(f"dura {_hours(g['hltb_main'])} h")
+        if DECK_MARK.get(g.get("deck")):
+            parts.append(DECK_MARK[g["deck"]])
         parts += [_played(lib.get("hours")), _estado(estado.get(appid, "fuera del backlog"))]
         lines.append(f"{i}. {name} — " + " · ".join(parts))
     return Reply("\n".join(lines), shown=shown)
@@ -554,7 +614,7 @@ def free_text(store: Store, text: str, llm=llm_module, history: list[dict] | Non
         request = llm.parse_request(text, top_tags(store.games), history=_turns(history))
     except llm.LLMError as e:
         log.warning("LLM (parse_request) falló: %s", e)
-        recs = recommend(Filters(), *args)
+        recs = recommend(Filters(deck=store.deck), *args)
         if not recs:
             return Reply(NO_DATA)
         why = ("Este mes ya se ha gastado el presupuesto de IA (/coste)"
@@ -574,7 +634,7 @@ def free_text(store: Store, text: str, llm=llm_module, history: list[dict] | Non
         return found or Reply("¿De qué juegos? Dime un nombre o una saga.")
     if request.kind == "help":
         log.info("Texto libre «%s» → %s", text, request.game)
-        return cmd_coste() if request.game == "coste" else cmd_ayuda()
+        return {"coste": cmd_coste, "limites": cmd_limites}.get(request.game, cmd_ayuda)()
     if request.kind == "review":
         log.info("Texto libre «%s» → repaso «%s»", text, request.game)
         return start_review(store, state if state is not None else {}, request.game)
@@ -588,21 +648,29 @@ def free_text(store: Store, text: str, llm=llm_module, history: list[dict] | Non
         log.info("Texto libre «%s» → lo mostrado antes", text)
         return cmd_mostrados(store, _last_shown(history))
     filters, note = request.filters, ""
+    # Lo que diga ahora manda; si no menciona la Deck, vale la preferencia guardada.
+    filters.deck = None if request.deck == "cualquiera" else (request.deck or store.deck)
+    if request.remember:
+        save_deck_pref(store, filters.deck)
+        note = (f"Apuntado: a partir de ahora solo te recomiendo juegos {DECK_PREF_TEXT[filters.deck]} "
+                "(dime «da igual la Deck» para quitarlo).\n\n" if filters.deck else
+                "Apuntado: vuelvo a recomendarte sin mirar la Steam Deck.\n\n")
     if request.source:
         wanted = "compartido" if request.source == "familiar" else "propio"
         filters.appids = frozenset(a for a, v in store.library.items() if v.get("source") == wanted)
     if request.game:
         ref = _resolve(store, request.game, _last_shown(history))
         if ref is None:
-            note = f"No encuentro «{request.game}» en tu biblioteca; "
+            note += f"No encuentro «{request.game}» en tu biblioteca; "
         else:
             filters.like_appid = ref["appid"]
     recs = recommend(filters, *args)
-    log.info("Texto libre «%s» → %s%s%s → %s", text, filters,
+    log.info("Texto libre «%s» → %s%s%s%s → %s", text, filters,
              f" like={request.game!r}" if request.game else "",
-             f" origen={request.source}" if request.source else "", [r.name for r in recs])
+             f" origen={request.source}" if request.source else "",
+             " (guardado)" if request.remember else "", [r.name for r in recs])
     if not recs:
-        recs = recommend(Filters(limit=filters.limit), *args)
+        recs = recommend(Filters(limit=filters.limit, deck=filters.deck), *args)
         if not recs:
             return Reply(NO_DATA)
         return _recs_reply(store, f"{note}No he encontrado nada exacto; esto es lo que más te encaja "

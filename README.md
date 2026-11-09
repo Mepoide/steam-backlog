@@ -53,7 +53,8 @@ resto necesita el venv. Ejecuta siempre desde la raíz del repo.
 O todo de una vez, más el commit/push de `backlog.csv`: `scripts/daily.sh`.
 
 - `enrich.py` pide a la tienda de Steam (géneros), a `IStoreBrowseService`
-  (tags con peso y reseñas, en español) y a HowLongToBeat (duración). Solo
+  (tags con peso, reseñas, imágenes, compatibilidad con Steam Deck y si está
+  en acceso anticipado) y a HowLongToBeat (duración). Solo
   pide lo que falta; la primera vez tarda ~15 min para unos 400 juegos.
   `--limit N` para probar con pocos, `--refresh` para rehacerlo todo.
 - `taste.py` construye tu perfil (horas × tags, con más peso a lo jugado en
@@ -106,7 +107,12 @@ Comandos:
   turnos parecido al Baldur's Gate 3» → filtros, el recomendador elige y Claude
   escribe una frase de introducción). También entiende «dame sus estados» o
   «¿cómo tengo los de Sherlock?», «de la biblioteca familiar», «el mejor valorado»,
-  «lo más corto», «hola» o «cuánto llevo gastado». Claude nunca elige los juegos. Recuerda
+  «lo más corto», «hola» o «cuánto llevo gastado», y «algo para la Deck» o
+  «¿el Solasta II ya ha salido?». Si dices que es norma («a partir de ahora,
+  solo cosas que vayan en la Steam Deck»), la guarda en `data/prefs.json` y la
+  aplica también a `/top`, `/recomienda` y `/parecidos` hasta que digas «olvida lo
+  de la Deck». Lo que Steam no comparte (qué tienes instalado, logros, espacio)
+  te lo dice en vez de inventarlo. Claude nunca elige los juegos. Recuerda
   los 3 últimos turnos y los juegos que mostró en cada uno, así que entiende
   «¿y de estrategia?», «los dos últimos» o «márcalos».
 - No se recomiendan juegos con 2 h o más jugadas aunque sigan en «pendiente»
@@ -117,7 +123,7 @@ Comandos:
 Las respuestas llevan imágenes de la tienda de Steam: álbum de cabeceras con las
 recomendaciones, la cabecera con la ficha de `/juego` y el repaso con la imagen
 de cada juego, que cambia en el mismo mensaje al pulsar los botones. Los estados
-llevan emoji (⏳ 🎮 ✅ 💤 🚫). El job diario descarga además las imágenes a
+llevan emoji (⏳ 🎮 ✅ 💤 🚫), y las listas marcan «Deck ✅/🟡» y «acceso anticipado». El job diario descarga además las imágenes a
 `data/images/` para la futura web (`src/images.py`). Si el token de la biblioteca
 familiar caduca, el job te avisa por Telegram con cómo renovarlo.
 

@@ -211,3 +211,29 @@ def test_write_intro_sees_durations():
                                Recommendation("2", "Raro", 0.5, "y", None, None)], client=c)
     content = c.kwargs["messages"][0]["content"]
     assert "Corto: x; dura 4.5 h (historia principal)" in content and "Raro: y; duración desconocida" in content
+
+
+def test_parse_request_deck_and_remember():
+    got = parse_request("ya sabes que tienen que ir en la deck", KNOWN,
+                        client=FakeClient(tool_use({"deck": "jugable", "remember": True})))
+    assert got.deck == "jugable" and got.remember is True
+    once = parse_request("algo para la deck", KNOWN, client=FakeClient(tool_use({"deck": "verificado"})))
+    assert once.deck == "verificado" and once.remember is False
+    bad = parse_request("x", KNOWN, client=FakeClient(tool_use({"deck": "switch", "remember": True})))
+    assert bad.deck == "" and bad.remember is False
+
+
+def test_parse_request_help_limits():
+    got = parse_request("foto de lo instalado en la deck", KNOWN,
+                        client=FakeClient(tool_use({"topic": "limites"}, name="bot_help")))
+    assert got == Request(kind="help", game="limites")
+
+
+def test_write_intro_sees_deck_and_early_access():
+    c = FakeClient([SimpleNamespace(type="text", text="Vale.")])
+    write_intro("deck", [Recommendation("1", "A", 0.5, "x", 4.5, 80, deck=2, early_access=True),
+                         Recommendation("2", "B", 0.5, "y", 3.0, 90)], client=c)
+    content = c.kwargs["messages"][0]["content"]
+    assert "A: x; dura 4.5 h (historia principal); jugable en Steam Deck; en acceso anticipado" in content
+    assert "B: y; dura 3.0 h (historia principal); sin datos de Steam Deck" in content
+    assert "Steam Deck" in c.kwargs["system"]
