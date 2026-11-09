@@ -9,6 +9,9 @@ Solo se versiona `backlog.csv` (appid, nombre, estado, prioridad, notas).
 Nada de claves, SteamIDs ni horas de juego en git: los datos crudos y
 derivados viven en `data/`, que está ignorado.
 
+Cómo funciona por dentro (arquitectura, módulos y algoritmos de perfil y
+recomendación): [docs/arquitectura.md](docs/arquitectura.md).
+
 ## Instalación
 
 ```bash
