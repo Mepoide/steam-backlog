@@ -90,10 +90,12 @@ Comandos:
 - `/recientes [n]`: lo último que ha llegado a tu biblioteca, por fecha.
 - `/marcar <juego> <estado>`: pide confirmación con botones, actualiza
   `backlog.csv` y hace commit + push.
-- `/repasar`: va enseñando, uno a uno, los juegos que ya empezaste (≥ 2 h) y
+- `/repasar [nombre]`: va enseñando, uno a uno, los juegos que ya empezaste (≥ 2 h) y
   siguen en «pendiente», lo último jugado primero, con botones Terminado /
   Jugando / Abandonado / Descartado / Saltar. Los cambios se suben a GitHub de
   una vez al pulsar Parar o al acabar (si lo dejas a medias, los sube el job diario).
+  Con un nombre (`/repasar sherlock holmes`, o «repasemos los de Sherlock Holmes»)
+  repasa solo los pendientes que casen, empezados o no.
 - `/coste`: llamadas, tokens y dólares gastados en IA este mes, frente al tope.
 - Texto libre: Claude decide si preguntas por un juego («cuánto he jugado al
   Hades» → ficha), por lo último que has comprado («qué he comprado hace poco»

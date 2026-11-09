@@ -280,7 +280,7 @@ def test_recientes_sorted_by_acquired():
 
 def test_free_text_routes_game_and_recent_without_intro():
     r = free_text(store(), "cuánto he jugado al Hades",
-                  llm=fake_llm(request=real_llm.Request(kind="game", game="Hades II"), intro_error=True))
+                  llm=fake_llm(request=real_llm.Request(kind="game", games=["Hades II"]), intro_error=True))
     assert r.text.startswith("Hades II — pendiente\n71.8 h jugadas")
     r = free_text(store(), "qué he comprado hace poco",
                   llm=fake_llm(request=real_llm.Request(kind="recent", limit=1)))
@@ -444,3 +444,33 @@ def test_free_text_like_game():
     assert "parecido a Hades II" in reply.text
     reply = free_text(s, "algo como Zelda", llm=fake_llm(request=real_llm.Request(game="Zelda")))
     assert reply.text.startswith("No encuentro «Zelda» en tu biblioteca; ")
+
+
+def test_juegos_several_names_one_card_each():
+    reply = free_text(store(), "awakened y celeste", llm=fake_llm(
+        request=real_llm.Request(kind="game", games=["Hades II", "celeste", "zzzz"])))
+    cards = reply.text.split("\n\n")
+    assert cards[0].startswith("Hades II — pendiente") and cards[1].startswith("Celeste — pendiente")
+    assert cards[2] == "No encuentro «zzzz» en tu biblioteca."
+    assert [a for a, _ in reply.shown] == ["6", "8"]
+
+
+def test_review_by_name_includes_unstarted_and_keeps_filter(backlog_file):
+    s, state = started_store(), {}
+    first = start_review(s, state, "hades")
+    assert first.text.startswith("Repaso de «hades» (quedan 2)\n\nHades II")
+    assert state["review_query"] == "hades"
+
+    def load():
+        s.backlog = read_backlog(backlog_file)
+        return s
+    nxt = review_step("rev:6:t", state, backlog_path=backlog_file, sync=lambda p, m: True, load=load)
+    assert nxt.text.startswith("Repaso de «hades» (quedan 1, llevas 1)\n\nHades —")
+    assert start_review(s, {}, "zzzz").text == "No tengo juegos en «pendiente» que casen con «zzzz»."
+
+
+def test_free_text_review_uses_chat_state():
+    state = {}
+    reply = free_text(started_store(), "repasemos los de hades", state=state,
+                      llm=fake_llm(request=real_llm.Request(kind="review", game="hades")))
+    assert reply.buttons[0] == ("Terminado", "rev:6:t") and state["review_query"] == "hades"
