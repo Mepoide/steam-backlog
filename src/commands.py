@@ -141,7 +141,8 @@ def cmd_ayuda() -> Reply:
 def cmd_limites() -> Reply:
     return Reply(
         "Eso no lo puedo saber: Steam no comparte qué tienes instalado o descargado (ni en la "
-        "Steam Deck ni en el PC), el espacio libre, tus logros ni tus amigos.\n\n"
+        "Steam Deck ni en el PC), el espacio libre, tus logros ni tus amigos. Tampoco veo tu "
+        "lista de deseos, noticias ni juegos que aún no tienes (fechas de salida, rumores).\n\n"
         "Sí veo tu biblioteca (propia y familiar), tus horas y fechas, y de cada juego su "
         "duración, reseñas, tags, si va en Steam Deck y si está en acceso anticipado. "
         "Prueba «¿el Solasta II va en la Deck?» o «algo corto para la Deck»."
@@ -210,8 +211,22 @@ def find_games(backlog: list[dict], query: str, n: int = 5) -> list[dict]:
     words = _token_matches(backlog, query)
     if words:
         return words[:n]
-    names = {fold(r["name"]): r for r in backlog}
+    # Último recurso, para erratas («selestre» → Celeste). Sin artículos ni preposiciones:
+    # el «the » compartido hacía que «The Expanse» se pareciera a The Ascent o The Cave.
+    q = _significant(query)
+    if not q:
+        return []
+    names = {}
+    for r in backlog:
+        names.setdefault(_significant(r["name"]), r)
     return [names[k] for k in difflib.get_close_matches(q, list(names), n=n, cutoff=0.6)]
+
+
+FILLER_WORDS = {"the", "a", "an", "of", "and", "el", "la", "los", "las", "un", "una", "de", "del", "y"}
+
+
+def _significant(s: str) -> str:
+    return " ".join(w for w in _words(s) if w not in FILLER_WORDS)
 
 
 def _entry_line(store: Store, row: dict) -> str:
