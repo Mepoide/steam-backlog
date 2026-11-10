@@ -6,7 +6,7 @@ import pytest
 import llm as real_llm
 from datetime import date
 
-from commands import (NO_DATA, Store, cmd_ayuda, cmd_buscar, cmd_coste, cmd_juego, cmd_marcar,
+from commands import (NO_DATA, Store, cmd_ayuda, cmd_buscar, cmd_coste, cmd_juego, cmd_limites, cmd_marcar,
                       cmd_mostrados, cmd_parecidos, cmd_recientes, cmd_recomienda, cmd_repasar,
                       cmd_top, confirm_mark, confirm_marks, find_games, finish_review, free_text,
                       parse_marks, parse_recomienda_args, plan_marks, render, review_step,
@@ -308,6 +308,17 @@ def test_find_games_tolerates_word_variants():
                            ("2", "Sherlock Holmes: The Devil's Daughter", "pendiente"))
     assert [r["appid"] for r in find_games(backlog, "chapters one")] == ["1"]
     assert [r["appid"] for r in find_games(backlog, "devils daughter")] == ["2"]
+
+
+def test_find_games_ignores_shared_articles():
+    """«The Expanse» no es «The Ascent»: el «The» compartido no basta para parecerse."""
+    backlog = make_backlog(("1", "The Ascent", "pendiente"), ("2", "The Cave", "pendiente"),
+                           ("3", "The Spatials", "pendiente"), ("4", "The Witcher 3", "pendiente"))
+    assert find_games(backlog, "The Expanse") == []
+    s = Store(games={}, scores={}, backlog=backlog, library={})
+    assert cmd_juego(s, "The Expanse").text == "No encuentro «The Expanse» en tu biblioteca."
+    assert [r["appid"] for r in find_games(backlog, "the ascnet")] == ["1"]
+    assert [r["appid"] for r in find_games(backlog, "witcher 3")] == ["4"]
 
 
 def test_commands_report_shown_games():
@@ -626,6 +637,11 @@ def test_free_text_deck_remember_saves_and_applies_later(tmp_path, monkeypatch):
         filters=Filters(limit=5), deck="cualquiera", remember=True)))
     assert off.text.startswith("Apuntado: vuelvo a recomendarte sin mirar la Steam Deck.")
     assert json.loads(path.read_text()) == {} and s.deck is None
+
+
+def test_limites_mentions_wishlist_and_news():
+    text = cmd_limites().text
+    assert "lista de deseos" in text and "noticias" in text and "aún no tienes" in text
 
 
 def test_free_text_limits_explains_what_bot_cannot_see():

@@ -112,7 +112,8 @@ HELP_TOOL = {
     "name": "bot_help",
     "description": ("Preguntas sobre el propio bot: saludos, qué puede hacer, cómo se usa (ayuda), "
                     "cuánto lleva gastado en IA (coste) o algo que el bot no puede saber (limites): "
-                    "qué tiene instalado o descargado, espacio libre, logros, amigos, precios."),
+                    "qué tiene instalado o descargado, espacio libre, logros, amigos, precios, "
+                    "lista de deseos, noticias o juegos que aún no tiene."),
     "input_schema": {
         "type": "object",
         "properties": {"topic": {"type": "string", "enum": ["ayuda", "coste", "limites"]}},
@@ -163,7 +164,9 @@ Llama siempre a UNA herramienta:
   («¿esos los tengo?», «¿cuánto duran?», «¿cuáles son de la familiar?»).
 - bot_help si saluda sin pedir nada, pregunta qué puede hacer el bot o cuánto ha gastado en IA;
   y con topic limites si pide algo que el bot no puede ver: lo que tiene instalado o descargado
-  (en la Steam Deck o el PC), espacio libre, logros, amigos o precios.
+  (en la Steam Deck o el PC), espacio libre, logros, amigos o precios; también si pregunta por
+  su lista de deseos, noticias o un juego que aún no ha salido («¿cuándo sale el nuevo de
+  The Expanse?», «¿lo tengo en la wishlist?»). «¿Tengo el X?» sí es game_info.
 - set_filters para todo lo demás: qué jugar, recomendaciones, géneros, duraciones.
 Te doy la conversación reciente para entender el mensaje actual: «¿y de estrategia?» sigue
 recomendando; si el actual aclara o corrige el anterior («fecha de compra me refiero» tras
