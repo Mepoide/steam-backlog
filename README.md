@@ -28,8 +28,20 @@ resto necesita el venv. Ejecuta siempre desde la raíz del repo.
 - `STEAM_API_KEY`: en <https://steamcommunity.com/dev/apikey>.
 - `STEAM_ID`: tu SteamID64 (17 dígitos, empieza por 7656). Lo ves en
   <https://steamid.io> o en la URL de tu perfil.
-- `STEAM_WEBAPI_TOKEN` (opcional, para la biblioteca compartida): con la
-  sesión de Steam iniciada en el navegador abre
+- `STEAM_REFRESH_TOKEN` (recomendado, para la biblioteca compartida): **dura
+  meses**. De él sale cada día, sin tocar nada, el token de 24 h que necesita la
+  API familiar. Para sacarlo: con la sesión de Steam iniciada en el navegador
+  abre <https://store.steampowered.com> → DevTools (⌥⌘I) → Application →
+  Cookies → `store.steampowered.com` → `steamRefresh_steam`, y copia el valor
+  **entero**: vale tal cual (`<steamid>||<token>`, se recorta solo).
+  Compruébalo antes de dejarlo al job diario, que te dirá también cuándo caduca:
+
+  ```bash
+  .venv/bin/python ops/steam_refresh_token.py
+  ```
+
+- `STEAM_WEBAPI_TOKEN` (alternativa manual al anterior, y respaldo si falla):
+  con la sesión de Steam iniciada en el navegador abre
   <https://store.steampowered.com/pointssummary/ajaxgetasyncconfig> y copia
   el valor de `webapi_token`. **Caduca en ~24 h**: si caduca, el export sigue
   solo con la biblioteca propia y el perfil conserva las últimas horas
@@ -125,7 +137,10 @@ recomendaciones, la cabecera con la ficha de `/juego` y el repaso con la imagen
 de cada juego, que cambia en el mismo mensaje al pulsar los botones. Los estados
 llevan emoji (⏳ 🎮 ✅ 💤 🚫), y las listas marcan «Deck ✅/🟡» y «acceso anticipado». El job diario descarga además las imágenes a
 `data/images/` para la futura web (`src/images.py`). Si el token de la biblioteca
-familiar caduca, el job te avisa por Telegram con cómo renovarlo.
+familiar caduca, el job te avisa por Telegram con cómo renovarlo, y distingue
+los tres casos: caducó el refresh token (toca renovarlo, cada pocos meses),
+caducó el token manual de 24 h, o el token está bien y Steam falló hoy (nada
+que hacer).
 
 El bot usa long polling: no hace falta abrir puertos ni exponer nada. Al
 arrancar publica su menú de comandos; la foto de perfil se pone una vez con

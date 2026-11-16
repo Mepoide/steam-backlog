@@ -300,6 +300,16 @@ sequenceDiagram
   no documentada que necesita un `webapi_token` de la tienda que caduca en unas
   24 h. De ahí vienen el origen (`propio` o `compartido`), los dueños y la
   **fecha de adquisición** (`rt_time_acquired`).
+- **El token de 24 h se renueva solo.** Con `STEAM_REFRESH_TOKEN` (un JWT de la
+  cookie `steamRefresh_steam`, que dura meses) el export pide al empezar un
+  token del día a `IAuthenticationService/GenerateAccessTokenForApp`, el mismo
+  camino que usan ASF o SteamKit. Se admite la cookie entera
+  (`<steamid>||<token>`). Si eso falla se usa `STEAM_WEBAPI_TOKEN` si lo hay, y
+  si tampoco, el export degrada como siempre (ver 4). `export_status.json`
+  guarda de dónde salió el token (`token_source`) y el error del refresh
+  (`refresh_error`) para que el aviso de Telegram sepa a quién echarle la culpa.
+  `ops/steam_refresh_token.py` comprueba un refresh token (caducidad, token del
+  día y lectura de la familiar) antes de dejárselo al job diario.
 - Si un juego aparece en las dos fuentes, mandan las horas de `GetOwnedGames` y
   se añade la fecha de adquisición de la familiar.
 - Las fechas anteriores al lanzamiento de Steam (2003-09-12) se descartan: la
@@ -570,6 +580,8 @@ biblioteca y viven en `data/` (ignorado), nunca en el repositorio público.
 | Fallo | Comportamiento |
 |---|---|
 | Caduca el token de la familiar (401) | El export conserva del export anterior los juegos compartidos y las fechas de compra, que solo da esa API. Las horas de los compartidos se quedan como estaban hasta renovar el token. `notify.py` avisa por Telegram con las instrucciones para renovarlo |
+| Caduca el `STEAM_REFRESH_TOKEN` (cada pocos meses) | Si hay `STEAM_WEBAPI_TOKEN` se usa ese y el aviso dice que el refresh token hay que renovarlo; si no, se degrada como en la fila anterior. El aviso lleva la cookie que hay que copiar, no el `webapi_token` |
+| Falla la familiar con el token recién renovado | El aviso dice que el token está bien y que no hay que tocar nada: se reintenta mañana |
 | Una imagen no carga en Telegram | Se envía la respuesta sin imágenes |
 | Una fuente del enriquecimiento cae o devuelve 429 | La fuente queda en `missing` y se reintenta al día siguiente |
 | Claude no responde, no hay clave o se agota el presupuesto | Recomendaciones «Para ti» con un aviso. Los comandos con `/` no se ven afectados |
@@ -588,7 +600,9 @@ biblioteca y viven en `data/` (ignorado), nunca en el repositorio público.
   tests.
 - Los SteamIDs de los dueños solo existen en `data/raw/`. `read_library()` los
   excluye a propósito de la vista que usa el bot.
-- Los `TELEGRAM_*`, `ANTHROPIC_API_KEY` y `STEAM_*` van en `.env`. El logger de
+- Los `TELEGRAM_*`, `ANTHROPIC_API_KEY` y `STEAM_*` van en `.env`, incluido el
+  `STEAM_REFRESH_TOKEN`, que da acceso a la cuenta de Steam durante meses:
+  `ops/steam_refresh_token.py` lo pide sin eco y no lo imprime. El logger de
   `httpx` se sube a WARNING porque las URLs de Telegram llevan el token del bot.
 - El bot solo responde a `TELEGRAM_ALLOWED_CHAT_ID`, tanto a mensajes como a
   botones. Sin ese valor arranca en modo configuración y no responde a nadie.
@@ -597,7 +611,7 @@ biblioteca y viven en `data/` (ignorado), nunca en el repositorio público.
 
 ## 6. Pruebas
 
-`pytest` (unos 210 tests) sin red:
+`pytest` (unos 225 tests) sin red:
 
 - **Fuentes:** respuestas grabadas en `tests/fixtures/`.
 - **LLM:** un cliente falso que devuelve llamadas a herramientas. Se comprueban
@@ -607,6 +621,12 @@ biblioteca y viven en `data/` (ignorado), nunca en el repositorio público.
   errores, y envío y edición de fotos, con `Update` sintéticos y un bot falso.
 - **Escrituras:** `backlog.csv` en `tmp_path`, con un `sync` y un `refresh`
   inyectados para que ningún test toque git ni los datos reales.
+- **Export:** `main()` corre con `RAW_DIR` en `tmp_path` y las llamadas a Steam
+  inyectadas, para comprobar que el token del día sale del refresh token y que
+  `export_status.json` dice de dónde vino. El canje con Steam
+  (`GenerateAccessTokenForApp`) **no está probado contra la API real**: hace
+  falta un refresh token de verdad, así que la primera ejecución en el Mac es la
+  prueba de fuego (`ops/steam_refresh_token.py`).
 
 La calidad de las recomendaciones se revisa con conversaciones reales. El log
 del bot registra cada mensaje, la petición que extrajo Claude y los juegos
@@ -619,8 +639,11 @@ antes de cada entrega.
 ## 7. Limitaciones conocidas y siguientes pasos
 
 - Un `/marcar` justo mientras corre el job de las 06:00 puede perderse.
-- El token de la biblioteca familiar caduca cada día, y renovarlo es manual
-  (el bot avisa).
+- El token de la biblioteca familiar se renueva solo con `STEAM_REFRESH_TOKEN`
+  (ver 3.1), pero el refresh token hay que renovarlo a mano cada pocos meses
+  cuando caduque (el bot avisa). Queda pendiente: comprobarlo contra la API real
+  desde el Mac y, si funciona, avisar unos días **antes** de que caduque en vez
+  de el día que falla (la fecha ya se lee del JWT).
 - La memoria de la conversación vive en RAM y se pierde al reiniciar el bot.
 - Las opiniones («me gustan») no se guardan como tales: solo influyen a través
   del estado. Podrían guardarse en la columna `notas`.
