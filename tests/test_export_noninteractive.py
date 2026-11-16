@@ -46,6 +46,15 @@ def test_refresh_token_accepts_the_cookie_tal_cual(monkeypatch):
     assert export.clean_refresh_token("") == ""
 
 
+def test_refresh_token_expiry_reads_the_date_from_the_jwt(monkeypatch):
+    """Sirve para saber cuándo habrá que renovarlo (ops/steam_refresh_token.py)."""
+    export = _export_module(monkeypatch)
+    jwt = "cabecera.eyJzdWIiOiAiNzY1NiIsICJleHAiOiAxODAwMDAwMDAwfQ.firma"
+    assert export.refresh_token_expiry(jwt) == "2027-01-15"
+    assert export.refresh_token_expiry("esto-no-es-un-jwt") == ""
+    assert export.refresh_token_expiry("") == ""
+
+
 def test_access_token_asks_steam_with_the_refresh_token(monkeypatch):
     export = _export_module(monkeypatch)
     seen = []

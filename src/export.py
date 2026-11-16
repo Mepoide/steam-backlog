@@ -15,6 +15,7 @@ Claves (en .env o en el entorno; ver .env.example):
 
 Si falta alguna clave, se pide por consola (no se guarda en ningún fichero).
 """
+import base64
 import csv
 import getpass
 import json
@@ -60,6 +61,16 @@ def clean_refresh_token(value):
     que recortarla a mano; un token suelto pasa igual.
     """
     return value.strip().rpartition("||")[2].strip()
+
+
+def refresh_token_expiry(refresh_token):
+    """Fecha de caducidad del refresh token (es un JWT), o "" si no se puede leer."""
+    try:
+        payload = refresh_token.split(".")[1]
+        data = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+        return ts(data["exp"])
+    except Exception:
+        return ""
 
 
 def access_token(refresh_token, steamid, post=post):
