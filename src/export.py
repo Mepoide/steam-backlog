@@ -9,7 +9,9 @@ instalado se lee .env; si no, se usan las variables de entorno.
 Claves (en .env o en el entorno; ver .env.example):
   STEAM_API_KEY        — steamcommunity.com/dev/apikey
   STEAM_ID             — SteamID64 (17 dígitos, empieza por 7656)
-  STEAM_WEBAPI_TOKEN   — opcional, para la biblioteca compartida (caduca ~24 h)
+  STEAM_REFRESH_TOKEN  — opcional; dura meses y de él se saca cada día el token
+                         de la biblioteca compartida (ver README)
+  STEAM_WEBAPI_TOKEN   — opcional, alternativa manual al anterior (caduca ~24 h)
 
 Si falta alguna clave, se pide por consola (no se guarda en ningún fichero).
 """
@@ -41,6 +43,56 @@ def get(path, params):
     req = urllib.request.Request(url, headers={"User-Agent": "steam-library-export"})
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.load(r)
+
+
+def post(path, params):
+    url = f"{API}/{path}/"
+    data = urllib.parse.urlencode(params).encode()
+    req = urllib.request.Request(url, data=data, headers={"User-Agent": "steam-library-export"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.load(r)
+
+
+def clean_refresh_token(value):
+    """El refresh token tal cual se copia de la cookie `steamRefresh_steam`.
+
+    Esa cookie vale «<steamid>||<token>», así que se admite entera para no tener
+    que recortarla a mano; un token suelto pasa igual.
+    """
+    return value.strip().rpartition("||")[2].strip()
+
+
+def access_token(refresh_token, steamid, post=post):
+    """Token de la biblioteca compartida (~24 h) a partir del refresh token.
+
+    Mismo camino que usan ASF o SteamKit: el refresh token dura meses y de él se
+    pide uno nuevo cada día, así no hay que renovar nada a mano.
+    """
+    data = post("IAuthenticationService/GenerateAccessTokenForApp/v1",
+                {"refresh_token": refresh_token, "steamid": steamid, "renewal_type": 0})
+    token = (data.get("response") or {}).get("access_token", "")
+    if not token:
+        raise RuntimeError("Steam no devolvió access_token: ¿caducó el refresh token?")
+    return token
+
+
+def shared_library_token(refresh_token, webapi_token, steamid, exchange=None):
+    """(token, origen, error) para la biblioteca compartida.
+
+    Con refresh token se pide uno nuevo; si eso falla se usa STEAM_WEBAPI_TOKEN
+    si lo hay, y el error se devuelve para que `notify.py` distinga «caducó el
+    refresh token» de «falló Steam hoy».
+    """
+    error = ""
+    if refresh_token:
+        try:
+            return (exchange or access_token)(refresh_token, steamid), "refresh", ""
+        except Exception as e:
+            error = f"{type(e).__name__}: {e}"
+            print(f"  ⚠ No pude renovar el token con STEAM_REFRESH_TOKEN ({e}).")
+    if webapi_token:
+        return webapi_token, "webapi", error
+    return "", "", error
 
 
 def ts(x):
@@ -146,16 +198,22 @@ def setting(name, prompt, secret=True, required=True):
 def main():
     key = setting("STEAM_API_KEY", "API key (no se ve al escribir): ")
     steamid = setting("STEAM_ID", "SteamID64: ", secret=False)
-    token = setting("STEAM_WEBAPI_TOKEN",
-                    "webapi_token para biblioteca compartida (Enter para omitir): ", required=False)
+    refresh = clean_refresh_token(setting(
+        "STEAM_REFRESH_TOKEN", "refresh token de Steam (Enter para omitir): ", required=False))
+    manual = setting("STEAM_WEBAPI_TOKEN",
+                     "webapi_token para biblioteca compartida (Enter para omitir): ", required=False)
+    if refresh:
+        print("→ Renovando el token de la biblioteca compartida…")
+    token, token_source, refresh_error = shared_library_token(refresh, manual, steamid)
     if not token:
-        print("  ⚠ Sin STEAM_WEBAPI_TOKEN: omito la biblioteca compartida.")
+        print("  ⚠ Sin token de la biblioteca compartida: omito la parte familiar.")
 
     print("→ Juegos propios…")
     lib = {str(k): v for k, v in owned_games(key, steamid).items()}
     print(f"  {len(lib)} juegos")
     csv_path = RAW_DIR / "steam_library.csv"
-    shared_ok, shared_error = False, "sin STEAM_WEBAPI_TOKEN" if not token else ""
+    shared_ok = False
+    shared_error = "" if token else ("sin STEAM_WEBAPI_TOKEN" if not refresh else refresh_error)
 
     if token:
         print("→ Biblioteca compartida…")
@@ -196,7 +254,8 @@ def main():
     # Para avisar por Telegram (notify.py) de que hay que renovar el token.
     with open(RAW_DIR / "export_status.json", "w", encoding="utf-8") as f:
         json.dump({"date": datetime.now(timezone.utc).strftime("%Y-%m-%d"), "shared_ok": shared_ok,
-                   "shared_error": shared_error}, f)
+                   "shared_error": shared_error, "token_source": token_source,
+                   "refresh_error": refresh_error}, f)
 
     n_shared = sum(1 for r in rows if r["source"] == "compartido")
     print(f"\n✓ {len(rows)} juegos ({len(rows) - n_shared} propios, {n_shared} compartidos)")
