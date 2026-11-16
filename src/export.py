@@ -240,7 +240,9 @@ def main():
                 else:
                     lib[appid] = s
         except Exception as e:
-            print(f"  ⚠ Falló la biblioteca compartida ({e}). ¿Caducó STEAM_WEBAPI_TOKEN?")
+            culpa = "¿Caducó STEAM_WEBAPI_TOKEN?" if token_source == "webapi" else \
+                    "el token se renovó bien, así que parece cosa de Steam."
+            print(f"  ⚠ Falló la biblioteca compartida ({e}). {culpa}")
             shared_error = str(e)
 
     if not shared_ok:
