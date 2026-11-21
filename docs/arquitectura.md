@@ -301,7 +301,9 @@ sequenceDiagram
   24 h. De ahí vienen el origen (`propio` o `compartido`), los dueños y la
   **fecha de adquisición** (`rt_time_acquired`).
 - **El token de 24 h se renueva solo.** Con `STEAM_REFRESH_TOKEN` (un JWT de la
-  cookie `steamRefresh_steam`, que dura meses) el export pide al empezar un
+  cookie `steamRefresh_steam` **de `login.steampowered.com`** —en `store.` y en
+  `help.` solo está `steamLoginSecure`, que es un token de acceso corto y no
+  sirve—, que dura meses) el export pide al empezar un
   token del día a `IAuthenticationService/GenerateAccessTokenForApp`, el mismo
   camino que usan ASF o SteamKit. Se admite la cookie entera
   (`<steamid>||<token>`). Si eso falla se usa `STEAM_WEBAPI_TOKEN` si lo hay, y

@@ -18,6 +18,8 @@ def test_message_about_the_refresh_token_says_it_lasts_months():
     assert "STEAM_REFRESH_TOKEN" in text and "steamRefresh_steam" in text
     assert "HTTP Error 401" in text and "meses" in text
     assert "ajaxgetasyncconfig" not in text  # ese es el token viejo, no el que toca renovar
+    # La cookie vive en login.steampowered.com; en store. no está (comprobado en el navegador).
+    assert "login.steampowered.com" in text and "store.steampowered.com" not in text
 
 
 def test_message_when_the_token_is_fine_and_steam_failed_today():

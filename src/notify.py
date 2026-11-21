@@ -25,9 +25,10 @@ STATUS = DATA_DIR / "raw" / "export_status.json"
 DEGRADED = ("Sigo con los juegos y fechas del último export bueno, pero las horas de los juegos "
             "familiares no se actualizan.")
 REFRESH_HELP = ("Para renovarlo: con la sesión de Steam iniciada en el navegador, abre "
-                "store.steampowered.com, copia el valor de la cookie «steamRefresh_steam» "
-                "(DevTools → Application → Cookies) a STEAM_REFRESH_TOKEN en el .env del Mac y "
-                "ejecuta scripts/daily.sh. El nuevo dura meses.")
+                "login.steampowered.com/jwt/ajaxrefresh y, en DevTools → Application → Cookies, "
+                "elige el origen login.steampowered.com y copia el valor entero de la cookie "
+                "«steamRefresh_steam» a STEAM_REFRESH_TOKEN en el .env del Mac; luego ejecuta "
+                "scripts/daily.sh. El nuevo dura meses.")
 
 TOKEN_HELP = ("⚠ Hoy no he podido leer la biblioteca familiar ({error}).\n"
               + DEGRADED + "\n\n"

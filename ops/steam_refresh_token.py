@@ -9,9 +9,11 @@ caduca, pide a Steam un token del día y lee con él la biblioteca familiar, as�
 que si acaba en ✓ el job diario funcionará.
 
 Para sacar el token: con la sesión de Steam iniciada en el navegador, abre
-store.steampowered.com → DevTools (⌥⌘I) → Application → Cookies →
-store.steampowered.com → `steamRefresh_steam`, y copia el valor entero
-(«<steamid>||<token>»: se admite tal cual).
+login.steampowered.com/jwt/ajaxrefresh → DevTools (⌥⌘I) → Application → Cookies
+→ origen `login.steampowered.com` → `steamRefresh_steam`, y copia el valor
+entero («<steamid>||<token>»: se admite tal cual). Ojo: en store. y en help.
+no está; lo que hay allí es `steamLoginSecure`, que es un token de acceso corto
+y no sirve.
 """
 import getpass
 import os
