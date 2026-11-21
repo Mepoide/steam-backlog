@@ -300,18 +300,28 @@ sequenceDiagram
   no documentada que necesita un `webapi_token` de la tienda que caduca en unas
   24 h. De ahí vienen el origen (`propio` o `compartido`), los dueños y la
   **fecha de adquisición** (`rt_time_acquired`).
-- **El token de 24 h se renueva solo.** Con `STEAM_REFRESH_TOKEN` (un JWT de la
-  cookie `steamRefresh_steam` **de `login.steampowered.com`** —en `store.` y en
-  `help.` solo está `steamLoginSecure`, que es un token de acceso corto y no
-  sirve—, que dura meses) el export pide al empezar un
-  token del día a `IAuthenticationService/GenerateAccessTokenForApp`, el mismo
-  camino que usan ASF o SteamKit. Se admite la cookie entera
-  (`<steamid>||<token>`). Si eso falla se usa `STEAM_WEBAPI_TOKEN` si lo hay, y
-  si tampoco, el export degrada como siempre (ver 4). `export_status.json`
-  guarda de dónde salió el token (`token_source`) y el error del refresh
-  (`refresh_error`) para que el aviso de Telegram sepa a quién echarle la culpa.
-  `ops/steam_refresh_token.py` comprueba un refresh token (caducidad, token del
-  día y lectura de la familiar) antes de dejárselo al job diario.
+- **El token de 24 h se renueva solo**, imitando lo que hace el navegador. En
+  `STEAM_REFRESH_TOKEN` va la cookie `steamRefresh_steam` **entera** de
+  `login.steampowered.com` (dura meses; en `store.` y en `help.` solo está
+  `steamLoginSecure`, que se le parece pero es un token de acceso corto). Al
+  empezar, el export hace un `GET` a
+  `login.steampowered.com/jwt/refresh?redir=…ajaxgetasyncconfig` mandando esa
+  cookie: Steam emite un `steamLoginSecure` nuevo y redirige a la tienda, que
+  responde el JSON con el `webapi_token` del día — **el mismo** que se copiaba a
+  mano, así que `shared_games()` no cambia. Se sigue con un `CookieJar` de la
+  librería estándar y un User-Agent de navegador.
+- **Lo que no funciona, y por qué.** `IAuthenticationService/GenerateAccessTokenForApp`
+  (el camino de ASF y SteamKit) devuelve `x-eresult: 15` (AccessDenied) con esta
+  cookie: su `aud` es `["web","renew","derive"]` y ese endpoint solo acepta
+  tokens de cliente o móvil. Comprobado contra la API real.
+- La cookie **no rota**: Steam no devuelve una nueva, así que el `.env` no se
+  reescribe nunca. Si algún día rotara, habría que guardarla.
+- Si el canje falla se usa `STEAM_WEBAPI_TOKEN` si lo hay, y si tampoco, el
+  export degrada como siempre (ver 4). `export_status.json` guarda de dónde
+  salió el token (`token_source`) y el error del canje (`refresh_error`) para
+  que el aviso de Telegram sepa a quién echarle la culpa.
+  `ops/steam_refresh_token.py` comprueba una cookie (caducidad, token del día y
+  lectura de la familiar) antes de dejársela al job diario.
 - Si un juego aparece en las dos fuentes, mandan las horas de `GetOwnedGames` y
   se añade la fecha de adquisición de la familiar.
 - Las fechas anteriores al lanzamiento de Steam (2003-09-12) se descartan: la
@@ -624,11 +634,12 @@ biblioteca y viven en `data/` (ignorado), nunca en el repositorio público.
 - **Escrituras:** `backlog.csv` en `tmp_path`, con un `sync` y un `refresh`
   inyectados para que ningún test toque git ni los datos reales.
 - **Export:** `main()` corre con `RAW_DIR` en `tmp_path` y las llamadas a Steam
-  inyectadas, para comprobar que el token del día sale del refresh token y que
-  `export_status.json` dice de dónde vino. El canje con Steam
-  (`GenerateAccessTokenForApp`) **no está probado contra la API real**: hace
-  falta un refresh token de verdad, así que la primera ejecución en el Mac es la
-  prueba de fuego (`ops/steam_refresh_token.py`).
+  inyectadas, para comprobar que el token del día sale de la cookie (entera y
+  codificada) y que `export_status.json` dice de dónde vino. El canje contra
+  Steam no se prueba en `pytest` (no hay red), pero **sí está comprobado contra
+  la API real** desde el Mac: devolvió el `webapi_token` y leyó 399 apps de la
+  familia. `ops/steam_refresh_token.py` repite esa comprobación cuando haga
+  falta.
 
 La calidad de las recomendaciones se revisa con conversaciones reales. El log
 del bot registra cada mensaje, la petición que extrajo Claude y los juegos
@@ -642,10 +653,14 @@ antes de cada entrega.
 
 - Un `/marcar` justo mientras corre el job de las 06:00 puede perderse.
 - El token de la biblioteca familiar se renueva solo con `STEAM_REFRESH_TOKEN`
-  (ver 3.1), pero el refresh token hay que renovarlo a mano cada pocos meses
-  cuando caduque (el bot avisa). Queda pendiente: comprobarlo contra la API real
-  desde el Mac y, si funciona, avisar unos días **antes** de que caduque en vez
-  de el día que falla (la fecha ya se lee del JWT).
+  (ver 3.1), pero la cookie hay que renovarla a mano cuando caduque, cada varios
+  meses (el bot avisa). Queda pendiente avisar unos días **antes** de que
+  caduque en vez de el día que falla: la fecha ya se lee del JWT, solo falta
+  compararla en `notify.py`.
+- La vía web depende de dos URLs no documentadas (`jwt/refresh` y
+  `ajaxgetasyncconfig`) y de que Steam no pida verificación de navegador. Si un
+  día deja de funcionar, el `STEAM_WEBAPI_TOKEN` manual sigue siendo el plan B y
+  el aviso de Telegram lo explica.
 - La memoria de la conversación vive en RAM y se pierde al reiniciar el bot.
 - Las opiniones («me gustan») no se guardan como tales: solo influyen a través
   del estado. Podrían guardarse en la columna `notas`.

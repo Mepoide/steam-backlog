@@ -9,8 +9,9 @@ instalado se lee .env; si no, se usan las variables de entorno.
 Claves (en .env o en el entorno; ver .env.example):
   STEAM_API_KEY        — steamcommunity.com/dev/apikey
   STEAM_ID             — SteamID64 (17 dígitos, empieza por 7656)
-  STEAM_REFRESH_TOKEN  — opcional; dura meses y de él se saca cada día el token
-                         de la biblioteca compartida (ver README)
+  STEAM_REFRESH_TOKEN  — opcional; la cookie `steamRefresh_steam` entera, que
+                         dura meses y de la que sale cada día el token de la
+                         biblioteca compartida (ver README)
   STEAM_WEBAPI_TOKEN   — opcional, alternativa manual al anterior (caduca ~24 h)
 
 Si falta alguna clave, se pide por consola (no se guarda en ningún fichero).
@@ -18,6 +19,7 @@ Si falta alguna clave, se pide por consola (no se guarda en ningún fichero).
 import base64
 import csv
 import getpass
+import http.cookiejar
 import json
 import os
 import sys
@@ -46,63 +48,92 @@ def get(path, params):
         return json.load(r)
 
 
-def post(path, params):
-    url = f"{API}/{path}/"
-    data = urllib.parse.urlencode(params).encode()
-    req = urllib.request.Request(url, data=data, headers={"User-Agent": "steam-library-export"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.load(r)
+ASYNC_CONFIG = "https://store.steampowered.com/pointssummary/ajaxgetasyncconfig"
+JWT_REFRESH = ("https://login.steampowered.com/jwt/refresh?redir="
+               + urllib.parse.quote(ASYNC_CONFIG, safe=""))
+BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/125.0 Safari/537.36")
 
 
-def clean_refresh_token(value):
-    """El refresh token tal cual se copia de la cookie `steamRefresh_steam`.
+def refresh_cookie(value):
+    """La cookie `steamRefresh_steam` tal como la manda el navegador.
 
-    Esa cookie vale «<steamid>||<token>», así que se admite entera para no tener
-    que recortarla a mano; un token suelto pasa igual.
+    DevTools la enseña codificada («<steamid>%7C%7C<jwt>»), que es justo lo que
+    Steam espera. Si se pega ya decodificada, se vuelve a codificar.
     """
-    return value.strip().rpartition("||")[2].strip()
+    return value.strip().replace("||", "%7C%7C")
 
 
-def refresh_token_expiry(refresh_token):
-    """Fecha de caducidad del refresh token (es un JWT), o "" si no se puede leer."""
+def cookie_jwt(cookie):
+    """El JWT que va dentro de la cookie, para poder leer su caducidad."""
+    return urllib.parse.unquote(cookie.strip()).rpartition("||")[2].strip()
+
+
+def refresh_token_expiry(cookie):
+    """Fecha de caducidad de la cookie (es un JWT), o "" si no se puede leer."""
     try:
-        payload = refresh_token.split(".")[1]
+        payload = cookie_jwt(cookie).split(".")[1]
         data = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
         return ts(data["exp"])
     except Exception:
         return ""
 
 
-def access_token(refresh_token, steamid, post=post):
-    """Token de la biblioteca compartida (~24 h) a partir del refresh token.
+def fetch_async_config(cookie):
+    """Pide a Steam la configuración de la tienda con la cookie de refresco.
 
-    Mismo camino que usan ASF o SteamKit: el refresh token dura meses y de él se
-    pide uno nuevo cada día, así no hay que renovar nada a mano.
+    Steam ve la cookie en `login.steampowered.com/jwt/refresh`, emite un
+    `steamLoginSecure` nuevo y redirige a la tienda, que ya responde el JSON con
+    el `webapi_token` del día. Es lo mismo que hace el navegador al entrar.
     """
-    data = post("IAuthenticationService/GenerateAccessTokenForApp/v1",
-                {"refresh_token": refresh_token, "steamid": steamid, "renewal_type": 0})
-    token = (data.get("response") or {}).get("access_token", "")
+    jar = http.cookiejar.CookieJar()
+    jar.set_cookie(http.cookiejar.Cookie(
+        version=0, name="steamRefresh_steam", value=cookie, port=None, port_specified=False,
+        domain="login.steampowered.com", domain_specified=True, domain_initial_dot=False,
+        path="/", path_specified=True, secure=True, expires=None, discard=False,
+        comment=None, comment_url=None, rest={}, rfc2109=False))
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    req = urllib.request.Request(JWT_REFRESH, headers={"User-Agent": BROWSER_UA,
+                                                       "Accept": "text/html,*/*"})
+    with opener.open(req, timeout=30) as r:
+        return r.read().decode("utf-8", "replace")
+
+
+def webapi_token(cookie, fetch=None):
+    """El `webapi_token` del día a partir de la cookie de refresco.
+
+    Es el mismo token que se copia a mano de `ajaxgetasyncconfig`, así que la
+    biblioteca familiar se lee igual que siempre. No vale
+    `GenerateAccessTokenForApp`: rechaza con AccessDenied los tokens de
+    audiencia «web», que son los del navegador.
+    """
+    body = (fetch or fetch_async_config)(refresh_cookie(cookie))
+    try:
+        data = json.loads(body)
+    except ValueError:
+        raise RuntimeError("Steam no devolvió JSON: ¿caducó STEAM_REFRESH_TOKEN?") from None
+    token = (data.get("data") or {}).get("webapi_token", "")
     if not token:
-        raise RuntimeError("Steam no devolvió access_token: ¿caducó el refresh token?")
+        raise RuntimeError("Steam no devolvió webapi_token: ¿caducó STEAM_REFRESH_TOKEN?")
     return token
 
 
-def shared_library_token(refresh_token, webapi_token, steamid, exchange=None):
+def shared_library_token(cookie, manual_token, exchange=None):
     """(token, origen, error) para la biblioteca compartida.
 
-    Con refresh token se pide uno nuevo; si eso falla se usa STEAM_WEBAPI_TOKEN
-    si lo hay, y el error se devuelve para que `notify.py` distinga «caducó el
-    refresh token» de «falló Steam hoy».
+    Con la cookie de refresco se pide el token del día; si eso falla se usa
+    STEAM_WEBAPI_TOKEN si lo hay, y el error se devuelve para que `notify.py`
+    distinga «caducó el refresh token» de «falló Steam hoy».
     """
     error = ""
-    if refresh_token:
+    if cookie:
         try:
-            return (exchange or access_token)(refresh_token, steamid), "refresh", ""
+            return (exchange or webapi_token)(cookie), "refresh", ""
         except Exception as e:
             error = f"{type(e).__name__}: {e}"
             print(f"  ⚠ No pude renovar el token con STEAM_REFRESH_TOKEN ({e}).")
-    if webapi_token:
-        return webapi_token, "webapi", error
+    if manual_token:
+        return manual_token, "webapi", error
     return "", "", error
 
 
@@ -209,13 +240,13 @@ def setting(name, prompt, secret=True, required=True):
 def main():
     key = setting("STEAM_API_KEY", "API key (no se ve al escribir): ")
     steamid = setting("STEAM_ID", "SteamID64: ", secret=False)
-    refresh = clean_refresh_token(setting(
-        "STEAM_REFRESH_TOKEN", "refresh token de Steam (Enter para omitir): ", required=False))
+    refresh = refresh_cookie(setting(
+        "STEAM_REFRESH_TOKEN", "cookie steamRefresh_steam (Enter para omitir): ", required=False))
     manual = setting("STEAM_WEBAPI_TOKEN",
                      "webapi_token para biblioteca compartida (Enter para omitir): ", required=False)
     if refresh:
         print("→ Renovando el token de la biblioteca compartida…")
-    token, token_source, refresh_error = shared_library_token(refresh, manual, steamid)
+    token, token_source, refresh_error = shared_library_token(refresh, manual)
     if not token:
         print("  ⚠ Sin token de la biblioteca compartida: omito la parte familiar.")
 

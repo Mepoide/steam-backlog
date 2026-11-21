@@ -30,14 +30,15 @@ resto necesita el venv. Ejecuta siempre desde la raíz del repo.
   <https://steamid.io> o en la URL de tu perfil.
 - `STEAM_REFRESH_TOKEN` (recomendado, para la biblioteca compartida): **dura
   meses**. De él sale cada día, sin tocar nada, el token de 24 h que necesita la
-  API familiar. Para sacarlo: con la sesión de Steam iniciada en el navegador
-  abre <https://login.steampowered.com/jwt/ajaxrefresh> → DevTools (⌥⌘I) →
-  Application → Cookies → origen `login.steampowered.com` →
-  `steamRefresh_steam`, y copia el valor **entero**: vale tal cual
-  (`<steamid>||<token>`, se recorta solo). Si no aparece, cierra sesión en Steam
-  y vuelve a entrar marcando «recordar». **Ojo:** en `store.` y en `help.` esa
-  cookie no está; la que hay allí es `steamLoginSecure`, que es un token de
-  acceso corto y no sirve para esto.
+  API familiar: el export hace lo mismo que tu navegador al entrar en la tienda.
+  Para sacarla: con la sesión de Steam iniciada en el navegador abre
+  <https://login.steampowered.com/jwt/refresh> → DevTools (⌥⌘I) → Application →
+  Cookies → origen `login.steampowered.com` → `steamRefresh_steam`, y copia el
+  valor **entero y tal cual**, con el `<steamid>%7C%7C` de delante (es la cookie
+  completa, no se recorta). Si no aparece, cierra sesión en Steam y vuelve a
+  entrar marcando «recordar». **Ojo:** en `store.` y en `help.` esa cookie no
+  está; la que hay allí es `steamLoginSecure`, que tiene la misma pinta pero es
+  un token de acceso corto y no sirve para esto.
   Compruébalo antes de dejarlo al job diario, que te dirá también cuándo caduca:
 
   ```bash
