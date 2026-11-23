@@ -113,7 +113,7 @@ def parse_items(payload: dict, tag_names: dict[int, str]) -> dict:
     except (KeyError, IndexError, TypeError) as e:
         raise SourceError("GetItems inesperado") from e
     out = {"tags": {}, "reviews_positive": None, "reviews_total": None, "images": {},
-           "deck": None, "early_access": False, "coming_soon": False, "release_date": None}
+           **parse_release({})}
     if item.get("success") != 1:
         return out  # appid inexistente o retirado: no es un fallo reintentable
     for t in item.get("tags") or []:
@@ -141,7 +141,14 @@ def _date(ts) -> str | None:
 
 
 def parse_release(item: dict) -> dict:
-    """Compatibilidad con Steam Deck, acceso anticipado y fecha de salida en Steam."""
+    """Compatibilidad con Steam Deck, acceso anticipado y fecha de salida en Steam.
+
+    De lo que aún no ha salido, Steam da o un texto ya traducido
+    (`custom_release_date_message`: «Próximamente», «Por confirmarse») o una fecha
+    con la precisión que haya anunciado la editora (`coming_soon_display`:
+    `date_exact`, `date_month`, `date_quarter`, `date_year`). Se guardan los dos
+    para no dar por exacto un día que Steam solo usa de relleno.
+    """
     release = item.get("release") or {}
     deck = (item.get("platforms") or {}).get("steam_deck_compat_category")
     return {
@@ -149,6 +156,8 @@ def parse_release(item: dict) -> dict:
         "early_access": bool(item.get("is_early_access") or release.get("is_early_access")),
         "coming_soon": bool(item.get("is_coming_soon") or release.get("is_coming_soon")),
         "release_date": _date(release.get("steam_release_date")),
+        "release_note": release.get("custom_release_date_message") or "",
+        "release_display": release.get("coming_soon_display") or "",
     }
 
 

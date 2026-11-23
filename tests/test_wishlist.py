@@ -134,3 +134,26 @@ def test_main_with_a_private_or_empty_wishlist(tmp_path, monkeypatch, capsys):
 
 def test_read_wishlist_without_file(tmp_path):
     assert read_wishlist(tmp_path / "no-existe.json") == {}
+
+
+def test_parse_item_cards_coming_soon_real_fixture():
+    """Respuesta real de tres juegos sin salir: con fecha al mes, «Próximamente» y «Por confirmarse»."""
+    cards = parse_item_cards(json.loads((FIX / "items_coming_soon.json").read_text(encoding="utf-8")))
+    dated = cards["3600000"]
+    assert dated["coming_soon"] is True and dated["release_display"] == "date_month"
+    assert dated["release_date"] and dated["release_note"] == ""
+    assert cards["3800010"]["release_note"] == "Próximamente"
+    assert cards["3900010"]["release_note"] == "Por confirmarse"
+    assert cards["3900010"]["release_date"] is None
+    # Sin reseñas todavía: no se cuela un «0 % 👍».
+    assert all(c["reviews_total"] == 0 for c in cards.values())
+
+
+def test_release_text_of_the_real_coming_soon_fixture():
+    """Lo que vería el usuario con esas tres respuestas reales."""
+    from commands import _release
+    cards = parse_item_cards(json.loads((FIX / "items_coming_soon.json").read_text(encoding="utf-8")))
+    assert _release(cards["3600000"]).startswith("Aún no ha salido (prevista para ")
+    assert "-" not in _release(cards["3600000"])  # al mes, nunca una fecha ISO con día
+    assert _release(cards["3800010"]) == "Aún no ha salido: Próximamente"
+    assert _release(cards["3900010"]) == "Aún no ha salido: Por confirmarse"

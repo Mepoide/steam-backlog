@@ -7,7 +7,7 @@ def test_build_application_registers_commands():
     app = build_application("123:ABC", 42)
     cmds = {c for h in app.handlers[0] if isinstance(h, CommandHandler) for c in h.commands}
     assert cmds == {"start", "ayuda", "top", "recomienda", "buscar", "juego", "parecidos",
-                    "recientes", "marcar", "repasar", "coste"}
+                    "recientes", "deseos", "marcar", "repasar", "coste"}
 
 
 def test_build_application_has_text_callback_and_unauthorized_handlers():
@@ -199,3 +199,9 @@ def test_replace_edits_in_place_or_resends():
     m, b = FakeMessage(edit_error=BadRequest("Message is not modified")), FakeBot()
     asyncio.run(replace(b, m, Reply("igual")))
     assert m.calls == [] and b.sent == []
+
+
+def test_deseos_command_dispatches_with_and_without_a_limit():
+    app = build_application("123:ABC", 42)
+    assert _matching_callbacks(app, _update(app, 42, "/deseos"))[0] == "on_deseos"
+    assert _matching_callbacks(app, _update(app, 42, "/deseos 5"))[0] == "on_deseos"

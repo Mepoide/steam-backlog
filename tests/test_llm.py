@@ -53,7 +53,7 @@ def test_parse_request_forces_a_tool_and_model():
     assert c.kwargs["tool_choice"] == {"type": "any"}
     assert [t["name"] for t in c.kwargs["tools"]] == ["set_filters", "game_info", "recent_games",
                                                       "mark_games", "last_results", "review_games",
-                                                      "game_status", "bot_help"]
+                                                      "game_status", "wishlist_info", "bot_help"]
     assert "Relajantes" in c.kwargs["system"]
     assert c.kwargs["messages"][0]["content"] == "x"
 
@@ -237,3 +237,21 @@ def test_write_intro_sees_deck_and_early_access():
     assert "A: x; dura 4.5 h (historia principal); jugable en Steam Deck; en acceso anticipado" in content
     assert "B: y; dura 3.0 h (historia principal); sin datos de Steam Deck" in content
     assert "Steam Deck" in c.kwargs["system"]
+
+
+def test_parse_request_wishlist_info():
+    got = parse_request("¿qué tengo apuntado?", KNOWN,
+                        client=FakeClient(tool_use({}, name="wishlist_info")))
+    assert got == Request(kind="wishlist", upcoming=False)
+    soon = parse_request("¿qué me sale pronto?", KNOWN,
+                         client=FakeClient(tool_use({"upcoming": True}, name="wishlist_info")))
+    assert soon.kind == "wishlist" and soon.upcoming is True
+
+
+def test_parse_system_sends_the_wishlist_to_game_info_not_to_limites():
+    c = FakeClient(tool_use({}))
+    parse_request("x", KNOWN, client=c)
+    flat = " ".join(c.kwargs["system"].split())
+    assert ("«¿lo tengo en la wishlist?» y «¿cuándo sale el nuevo de The Expanse?» son game_info"
+            in flat)
+    assert "noticias y rumores de un juego" in flat  # eso sí sigue en «limites»

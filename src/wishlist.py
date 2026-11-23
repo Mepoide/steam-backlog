@@ -19,7 +19,8 @@ from library import atomic_write_json
 
 # Lo que se guarda de cada juego aunque la tienda no dé su ficha (retirado, sin región).
 EMPTY_CARD = {"name": "", "reviews_positive": None, "reviews_total": None, "images": {},
-              "deck": None, "early_access": False, "coming_soon": False, "release_date": None}
+              "deck": None, "early_access": False, "coming_soon": False, "release_date": None,
+              "release_note": "", "release_display": ""}
 
 
 def build(items: list[dict], cards: dict[str, dict]) -> list[dict]:

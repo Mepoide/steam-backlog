@@ -1,0 +1,89 @@
+{
+ "response": {
+  "store_items": [
+   {
+    "id": 3600000,
+    "success": 1,
+    "name": "Football Champions",
+    "appid": 3600000,
+    "reviews": {
+     "summary_filtered": {
+      "review_count": 0,
+      "percent_positive": 0,
+      "review_score": 0,
+      "review_score_label": "No existen reseñas de usuarios"
+     }
+    },
+    "release": {
+     "steam_release_date": 1796025600,
+     "is_coming_soon": true,
+     "coming_soon_display": "date_month"
+    },
+    "platforms": {
+     "windows": true,
+     "vr_support": {},
+     "steam_deck_compat_category": 0,
+     "steam_os_compat_category": 0,
+     "steam_frame_compat_category": 0,
+     "steam_machine_compat_category": 0
+    }
+   },
+   {
+    "id": 3800010,
+    "success": 1,
+    "name": "Abyssal Rust",
+    "appid": 3800010,
+    "reviews": {
+     "summary_filtered": {
+      "review_count": 0,
+      "percent_positive": 0,
+      "review_score": 0,
+      "review_score_label": "No existen reseñas de usuarios"
+     }
+    },
+    "release": {
+     "is_coming_soon": true,
+     "custom_release_date_message": "Próximamente",
+     "coming_soon_display": "text_comingsoon"
+    },
+    "platforms": {
+     "windows": true,
+     "vr_support": {},
+     "steam_deck_compat_category": 0,
+     "steam_os_compat_category": 0,
+     "steam_frame_compat_category": 0,
+     "steam_machine_compat_category": 0
+    }
+   },
+   {
+    "id": 3900010,
+    "success": 1,
+    "name": "The Chronicles of Nesis",
+    "appid": 3900010,
+    "reviews": {
+     "summary_filtered": {
+      "review_count": 0,
+      "percent_positive": 0,
+      "review_score": 0,
+      "review_score_label": "No existen reseñas de usuarios"
+     },
+     "counts_all_purchases": true
+    },
+    "release": {
+     "is_coming_soon": true,
+     "custom_release_date_message": "Por confirmarse",
+     "coming_soon_display": "text_tba"
+    },
+    "platforms": {
+     "windows": true,
+     "steamos_linux": true,
+     "vr_support": {},
+     "steam_deck_compat_category": 0,
+     "steam_os_compat_category": 0,
+     "steam_frame_compat_category": 0,
+     "steam_machine_compat_category": 0
+    }
+   }
+  ]
+ }
+}

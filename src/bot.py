@@ -33,6 +33,7 @@ MENU = (("top", "Tus filas: para ti, sesión corta, joyas"),
         ("juego", "Ficha: horas jugadas, fechas, duración"),
         ("parecidos", "Lo que más se parece a un juego"),
         ("recientes", "Lo último que llegó a tu biblioteca"),
+        ("deseos", "Tu lista de deseos y qué está por salir"),
         ("marcar", "Cambia el estado de un juego"),
         ("repasar", "Clasifica los empezados (o /repasar <saga>)"),
         ("coste", "Gasto de IA de este mes"),
@@ -156,6 +157,12 @@ async def on_recientes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await _send(update, lambda: commands.cmd_recientes(commands.load_store(), limit), context)
 
 
+async def on_deseos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    raw = _args(context).strip()
+    limit = min(max(int(raw), 1), 30) if raw.isdigit() else commands.WISHLIST_LIMIT
+    await _send(update, lambda: commands.cmd_deseos(commands.load_store(), limit), context)
+
+
 async def on_parecidos(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     args = _args(context)
     await _send(update, lambda: commands.cmd_parecidos(commands.load_store(), args), context)
@@ -243,7 +250,8 @@ def build_application(token: str, allowed_chat_id: int) -> Application:
     for names, fn in ((["start", "ayuda"], on_ayuda), (["top"], on_top),
                       (["recomienda"], on_recomienda), (["buscar"], on_buscar),
                       (["juego"], on_juego), (["parecidos"], on_parecidos),
-                      (["recientes"], on_recientes), (["marcar"], on_marcar),
+                      (["recientes"], on_recientes), (["deseos"], on_deseos),
+                      (["marcar"], on_marcar),
                       (["repasar"], on_repasar), (["coste"], on_coste)):
         app.add_handler(CommandHandler(names, fn, filters=allowed))
     app.add_handler(MessageHandler(allowed & filters.TEXT & ~filters.COMMAND, on_text))

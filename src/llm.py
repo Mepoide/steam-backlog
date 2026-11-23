@@ -82,9 +82,10 @@ LAST_TOOL = {
 
 GAME_TOOL = {
     "name": "game_info",
-    "description": ("Ficha de juegos concretos de su biblioteca: horas jugadas, última partida, "
-                    "fecha de compra, duración, reseñas, tags, compatibilidad con Steam Deck, si "
-                    "está en acceso anticipado y cuándo salió. Para preguntas sobre juegos que nombra."),
+    "description": ("Ficha de juegos concretos de su biblioteca o de su lista de deseos: horas "
+                    "jugadas, última partida, fecha de compra, duración, reseñas, tags, "
+                    "compatibilidad con Steam Deck, si está en acceso anticipado y cuándo salió o "
+                    "cuándo sale. Para preguntas sobre juegos que nombra, los tenga o no."),
     "input_schema": {
         "type": "object",
         "properties": {"names": {"type": "array", "items": {"type": "string"},
@@ -108,12 +109,26 @@ STATUS_TOOL = {
     },
 }
 
+WISHLIST_TOOL = {
+    "name": "wishlist_info",
+    "description": ("Su lista de deseos de Steam: qué tiene apuntado y cuándo sale lo que aún no "
+                    "ha salido. Para «¿qué tengo en la lista de deseos?» o «¿qué me sale pronto?»; "
+                    "si pregunta por un juego concreto, es game_info."),
+    "input_schema": {
+        "type": "object",
+        "properties": {"upcoming": {"type": "boolean",
+                                    "description": ("true si solo pregunta por lo que todavía no "
+                                                    "ha salido («¿qué sale pronto?»).")}},
+        "additionalProperties": False,
+    },
+}
+
 HELP_TOOL = {
     "name": "bot_help",
     "description": ("Preguntas sobre el propio bot: saludos, qué puede hacer, cómo se usa (ayuda), "
                     "cuánto lleva gastado en IA (coste) o algo que el bot no puede saber (limites): "
                     "qué tiene instalado o descargado, espacio libre, logros, amigos, precios, "
-                    "lista de deseos, noticias o juegos que aún no tiene."),
+                    "noticias o rumores de un juego."),
     "input_schema": {
         "type": "object",
         "properties": {"topic": {"type": "string", "enum": ["ayuda", "coste", "limites"]}},
@@ -148,9 +163,13 @@ RECENT_TOOL = {
 PARSE_SYSTEM = """Atiendes a un jugador que pregunta por su biblioteca de Steam.
 Llama siempre a UNA herramienta:
 - game_info si pregunta por juegos concretos (cuánto los ha jugado, qué tal son, cuánto duran,
-  si ya han salido o siguen en acceso anticipado, si van en Steam Deck...);
+  si ya han salido, cuándo salen, si siguen en acceso anticipado, si van en Steam Deck, si los
+  tiene o si los tiene apuntados en la lista de deseos);
   pon cada juego que nombre por separado y con su nombre completo («awakened» de Sherlock
   Holmes → «Sherlock Holmes The Awakened»); la saga sola no es un juego.
+- wishlist_info si pregunta por su lista de deseos en conjunto («¿qué tengo apuntado?») o por
+  lo que está por salir sin nombrar un juego («¿qué me sale pronto?»), con upcoming=true si
+  solo quiere lo que aún no ha salido.
 - review_games solo si quiere ponerse a clasificar o cambiar el estado de sus juegos uno a uno
   («repasemos los de Sherlock Holmes», «vamos a clasificar lo que tengo empezado»).
 - game_status si pregunta en qué estado están («¿qué estados tienen?», «¿cómo tengo los de
@@ -164,9 +183,10 @@ Llama siempre a UNA herramienta:
   («¿esos los tengo?», «¿cuánto duran?», «¿cuáles son de la familiar?»).
 - bot_help si saluda sin pedir nada, pregunta qué puede hacer el bot o cuánto ha gastado en IA;
   y con topic limites si pide algo que el bot no puede ver: lo que tiene instalado o descargado
-  (en la Steam Deck o el PC), espacio libre, logros, amigos o precios; también si pregunta por
-  su lista de deseos, noticias o un juego que aún no ha salido («¿cuándo sale el nuevo de
-  The Expanse?», «¿lo tengo en la wishlist?»). «¿Tengo el X?» sí es game_info.
+  (en la Steam Deck o el PC), espacio libre, logros, amigos, precios, o noticias y rumores de un
+  juego («¿qué se dice del nuevo de The Expanse?»). «¿Tengo el X?», «¿lo tengo en la wishlist?» y
+  «¿cuándo sale el nuevo de The Expanse?» son game_info: la lista de deseos y las fechas de
+  salida sí las ve.
 - set_filters para todo lo demás: qué jugar, recomendaciones, géneros, duraciones.
 Te doy la conversación reciente para entender el mensaje actual: «¿y de estrategia?» sigue
 recomendando; si el actual aclara o corrige el anterior («fecha de compra me refiero» tras
@@ -212,7 +232,8 @@ DECK_TEXT = {3: "verificado en Steam Deck", 2: "jugable en Steam Deck",
 @dataclass
 class Request:
     """Lo que pide el usuario: recomendar, una ficha, los recientes, marcar o la última lista."""
-    kind: str = "recommend"  # recommend | game | recent | mark | last | review | status | help
+    # recommend | game | recent | mark | last | review | status | wishlist | help
+    kind: str = "recommend"
     filters: Filters = field(default_factory=Filters)
     game: str = ""  # referencia de «parecido a» («recommend») o filtro del repaso («review»)
     games: list[str] = field(default_factory=list)  # fichas pedidas («game»)
@@ -221,6 +242,7 @@ class Request:
     source: str = ""  # "propio" | "familiar" (filtro de recomendación)
     deck: str = ""  # "jugable" | "verificado" | "cualquiera" | "" (no lo menciona)
     remember: bool = False  # guardar lo de la Deck como preferencia permanente
+    upcoming: bool = False  # en «wishlist», solo lo que aún no ha salido
 
 
 @dataclass
@@ -302,7 +324,7 @@ def _marks(inp: dict) -> list[tuple[str, str]]:
 
 
 TOOLS = [FILTERS_TOOL, GAME_TOOL, RECENT_TOOL, MARK_TOOL, LAST_TOOL, REVIEW_TOOL, STATUS_TOOL,
-         HELP_TOOL]
+         WISHLIST_TOOL, HELP_TOOL]
 MAX_GAMES = 5
 
 
@@ -337,6 +359,8 @@ def parse_request(text: str, known_tags: list[str], client=None,
         return Request(kind="mark", marks=_marks(inp))
     if call.name == "last_results":
         return Request(kind="last")
+    if call.name == "wishlist_info":
+        return Request(kind="wishlist", upcoming=inp.get("upcoming") is True)
     like = inp.get("like_game")
     filters = _filters(inp, known_tags)
     if inp.get("sort") in ("valoracion", "duracion"):
