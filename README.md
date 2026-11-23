@@ -3,7 +3,8 @@
 Exporta la biblioteca de Steam (propia + compartida por Family Sharing),
 la enriquece con géneros, tags, reseñas y duración, calcula un perfil de
 gusto a partir de tus horas de juego y te recomienda qué jugar del backlog
-desde un bot de Telegram.
+desde un bot de Telegram. También lee tu lista de deseos, para saber qué
+tienes apuntado y cuándo sale.
 
 Solo se versiona `backlog.csv` (appid, nombre, estado, prioridad, notas).
 Nada de claves, SteamIDs ni horas de juego en git: los datos crudos y
@@ -62,6 +63,7 @@ resto necesita el venv. Ejecuta siempre desde la raíz del repo.
 
 ```bash
 .venv/bin/python src/export.py        # → data/raw/steam_library.{csv,json}
+.venv/bin/python src/wishlist.py      # → data/raw/wishlist.json (lista de deseos)
 .venv/bin/python src/sync_backlog.py  # juegos nuevos → backlog.csv como "pendiente"
 .venv/bin/python src/enrich.py        # → data/enriched/games.json (incremental)
 .venv/bin/python src/taste.py         # → data/enriched/profile.json y scores.json
@@ -69,6 +71,11 @@ resto necesita el venv. Ejecuta siempre desde la raíz del repo.
 
 O todo de una vez, más el commit/push de `backlog.csv`: `scripts/daily.sh`.
 
+- `wishlist.py` lee la lista de deseos con `IWishlistService/GetWishlist`, que es
+  pública (va con el `STEAM_ID`, sin API key ni token) pero **solo si «Detalles de
+  juegos» de tu perfil está en Público**: si no, Steam responde una lista vacía, lo
+  mismo que si no tuvieras nada apuntado. Los nombres y las fechas de salida salen
+  de `IStoreBrowseService` en lotes de 50 juegos.
 - `enrich.py` pide a la tienda de Steam (géneros), a `IStoreBrowseService`
   (tags con peso, reseñas, imágenes, compatibilidad con Steam Deck y si está
   en acceso anticipado) y a HowLongToBeat (duración). Solo
@@ -106,6 +113,10 @@ Comandos:
 - `/parecidos <juego>`: lo que no has empezado que más se parece a ese juego
   (similitud de tags, pesando más los tags poco comunes).
 - `/recientes [n]`: lo último que ha llegado a tu biblioteca, por fecha.
+- `/deseos [n]`: tu lista de deseos. Primero lo que aún no ha salido, por fecha de
+  salida, y luego lo que ya está a la venta, lo último apuntado primero. Las fechas
+  van con la precisión que dé Steam («marzo de 2027», «Por confirmarse»), sin
+  inventarse el día.
 - `/marcar <juego> <estado>`: pide confirmación con botones, actualiza
   `backlog.csv` y hace commit + push.
 - `/repasar [nombre]`: va enseñando, uno a uno, los juegos que ya empezaste (≥ 2 h) y
@@ -128,8 +139,11 @@ Comandos:
   «¿el Solasta II ya ha salido?». Si dices que es norma («a partir de ahora,
   solo cosas que vayan en la Steam Deck»), la guarda en `data/prefs.json` y la
   aplica también a `/top`, `/recomienda` y `/parecidos` hasta que digas «olvida lo
-  de la Deck». Lo que Steam no comparte (qué tienes instalado, logros, espacio)
-  te lo dice en vez de inventarlo. Claude nunca elige los juegos. Recuerda
+  de la Deck». De la lista de deseos entiende «¿qué tengo apuntado?» y «¿qué me
+  sale pronto?», y si preguntas por un juego que no tienes («¿cuándo sale el nuevo
+  de The Expanse?», «¿lo tengo en la wishlist?») te contesta con su ficha de la
+  lista de deseos. Lo que Steam no comparte (qué tienes instalado, logros, espacio,
+  precios, noticias) te lo dice en vez de inventarlo. Claude nunca elige los juegos. Recuerda
   los 3 últimos turnos y los juegos que mostró en cada uno, así que entiende
   «¿y de estrategia?», «los dos últimos» o «márcalos».
 - No se recomiendan juegos con 2 h o más jugadas aunque sigan en «pendiente»
@@ -190,4 +204,5 @@ de las 06:00, ese cambio de estado puede perderse.
 
 Varias fuentes no son APIs oficiales y pueden cambiar o dejar de funcionar
 sin previo aviso: la biblioteca compartida (`IFamilyGroupsService`), los tags
-y reseñas (`IStoreBrowseService`, semidocumentada) y HowLongToBeat.
+y reseñas (`IStoreBrowseService`, semidocumentada), la lista de deseos
+(`IWishlistService`) y HowLongToBeat.
