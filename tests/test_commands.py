@@ -6,7 +6,8 @@ import pytest
 import llm as real_llm
 from datetime import date
 
-from commands import (NO_DATA, Store, cmd_ayuda, cmd_buscar, cmd_coste, cmd_juego, cmd_limites, cmd_marcar,
+from commands import (NO_DATA, Store, cmd_ayuda, cmd_buscar, cmd_coste, cmd_deseos, cmd_juego,
+                      cmd_juegos, cmd_limites, cmd_marcar,
                       cmd_mostrados, cmd_parecidos, cmd_recientes, cmd_recomienda, cmd_repasar,
                       cmd_top, confirm_mark, confirm_marks, find_games, finish_review, free_text,
                       parse_marks, parse_recomienda_args, plan_marks, render, review_step,
@@ -60,7 +61,8 @@ def test_render_format():
 
 def test_ayuda_lists_commands():
     text = cmd_ayuda().text
-    for c in ("/top", "/recomienda", "/buscar", "/juego", "/recientes", "/marcar", "/coste"):
+    for c in ("/top", "/recomienda", "/buscar", "/juego", "/recientes", "/deseos", "/marcar",
+              "/coste"):
         assert c in text
 
 
@@ -265,7 +267,8 @@ def test_juego_shows_playtime_dates_and_store_data():
 
 def test_juego_errors():
     assert cmd_juego(store(), "").text.startswith("Uso: /juego")
-    assert cmd_juego(store(), "zzzz").text == "No encuentro «zzzz» en tu biblioteca."
+    assert cmd_juego(store(), "zzzz").text == ("No encuentro «zzzz» en tu biblioteca ni en tu "
+                                               "lista de deseos.")
 
 
 def test_recientes_sorted_by_acquired():
@@ -316,7 +319,8 @@ def test_find_games_ignores_shared_articles():
                            ("3", "The Spatials", "pendiente"), ("4", "The Witcher 3", "pendiente"))
     assert find_games(backlog, "The Expanse") == []
     s = Store(games={}, scores={}, backlog=backlog, library={})
-    assert cmd_juego(s, "The Expanse").text == "No encuentro «The Expanse» en tu biblioteca."
+    assert cmd_juego(s, "The Expanse").text == ("No encuentro «The Expanse» en tu biblioteca "
+                                                "ni en tu lista de deseos.")
     assert [r["appid"] for r in find_games(backlog, "the ascnet")] == ["1"]
     assert [r["appid"] for r in find_games(backlog, "witcher 3")] == ["4"]
 
@@ -465,7 +469,7 @@ def test_juegos_several_names_one_card_each():
         request=real_llm.Request(kind="game", games=["Hades II", "celeste", "zzzz"])))
     cards = reply.text.split("\n\n")
     assert cards[0].startswith("Hades II — ⏳ pendiente") and cards[1].startswith("Celeste — ⏳ pendiente")
-    assert cards[2] == "No encuentro «zzzz» en tu biblioteca."
+    assert cards[2] == "No encuentro «zzzz» en tu biblioteca ni en tu lista de deseos."
     assert [a for a, _ in reply.shown] == ["6", "8"]
 
 
@@ -639,9 +643,10 @@ def test_free_text_deck_remember_saves_and_applies_later(tmp_path, monkeypatch):
     assert json.loads(path.read_text()) == {} and s.deck is None
 
 
-def test_limites_mentions_wishlist_and_news():
+def test_limites_keeps_news_out_but_not_the_wishlist():
     text = cmd_limites().text
-    assert "lista de deseos" in text and "noticias" in text and "aún no tienes" in text
+    assert "Tampoco veo noticias ni rumores" in text
+    assert "Sí veo tu biblioteca (propia y familiar), tu lista de deseos" in text
 
 
 def test_free_text_limits_explains_what_bot_cannot_see():
@@ -655,3 +660,129 @@ def test_mostrados_shows_deck_mark():
     text = cmd_mostrados(s, [("5", "Hades"), ("8", "Celeste")]).text
     assert "1. Hades — biblioteca familiar, disponible desde 2021-07-01 · dura 24 h · Deck ✅ ·" in text
     assert "Deck" not in text.splitlines()[2]
+
+
+def wish(appid, name, added="2026-10-04", coming=False, date=None, display="", note="",
+         pos=None, total=None, deck=None, early=False):
+    return {"appid": appid, "name": name, "priority": 0, "added": added, "coming_soon": coming,
+            "release_date": date, "release_display": display, "release_note": note,
+            "reviews_positive": pos, "reviews_total": total, "images": {}, "deck": deck,
+            "early_access": early}
+
+
+def wish_store():
+    s = store()
+    s.wishlist = {
+        "100": wish("100", "The Expanse: Osiris Reborn", coming=True, date="2027-03-20",
+                    display="date_month"),
+        "101": wish("101", "Nesis", coming=True, note="Por confirmarse", added=None),
+        "102": wish("102", "Blue Prince", added="2026-09-01", pos=950, total=1000, deck=3),
+        # Un juego de la familiar puede seguir apuntado: lo tiene otro, no él.
+        "5": wish("5", "Hades", added="2021-01-05"),
+    }
+    return s
+
+
+def test_deseos_lists_upcoming_first_with_the_precision_steam_gives():
+    reply = cmd_deseos(wish_store())
+    lines = reply.text.splitlines()
+    assert lines[0] == "Tu lista de deseos (4 juegos, 2 por salir)"
+    assert lines[2] == "Por salir:"
+    assert lines[3] == "1. The Expanse: Osiris Reborn — sale en marzo de 2027 · apuntado el 2026-10-04"
+    assert lines[4] == "2. Nesis — Por confirmarse"
+    assert "Ya a la venta:" in reply.text
+    assert "1. Blue Prince — 95 % 👍 · Deck ✅ · apuntado el 2026-09-01" in reply.text
+    # Lo último apuntado primero entre lo que ya salió.
+    assert reply.text.index("Blue Prince") < reply.text.index("Hades —")
+    assert [n for _, n in reply.shown][:2] == ["The Expanse: Osiris Reborn", "Nesis"]
+
+
+def test_deseos_upcoming_only():
+    reply = cmd_deseos(wish_store(), upcoming=True)
+    assert "Por salir:" in reply.text and "Ya a la venta:" not in reply.text
+    assert "Blue Prince" not in reply.text
+
+
+def test_deseos_upcoming_when_everything_is_out():
+    s = store()
+    s.wishlist = {"102": wish("102", "Blue Prince")}
+    assert cmd_deseos(s, upcoming=True).text == ("De los 1 juegos de tu lista de deseos ya han "
+                                                 "salido todos.")
+
+
+def test_deseos_without_data_explains_how_to_get_it():
+    reply = cmd_deseos(store())
+    assert "ejecuta wishlist.py" in reply.text and "Detalles de juegos" in reply.text
+
+
+def test_deseos_limit_counts_both_sections():
+    reply = cmd_deseos(wish_store(), limit=2)
+    assert "Ya a la venta:" not in reply.text and len(reply.shown) == 2
+
+
+def test_juego_falls_back_to_the_wishlist():
+    reply = cmd_juego(wish_store(), "expanse")
+    assert reply.text.splitlines() == [
+        "The Expanse: Osiris Reborn — 💜 lista de deseos",
+        "Apuntado el 2026-10-04",
+        "Aún no ha salido (prevista para marzo de 2027)",
+        "No lo tienes, así que no entra en el backlog ni en las recomendaciones.",
+        "https://store.steampowered.com/app/100",
+    ]
+    assert reply.shown == [("100", "The Expanse: Osiris Reborn")]
+
+
+def test_juego_of_a_wishlisted_game_with_a_text_date():
+    assert "Aún no ha salido: Por confirmarse" in cmd_juego(wish_store(), "Nesis").text
+
+
+def test_juego_of_an_owned_game_also_says_it_is_wishlisted():
+    text = cmd_juego(wish_store(), "Hades").text
+    assert "💜 En tu lista de deseos desde el 2021-01-05" in text
+    assert text.startswith("Hades — ⏳ pendiente")
+
+
+def test_juegos_mixes_backlog_and_wishlist_cards():
+    reply = free_text(wish_store(), "y el expanse?", llm=fake_llm(
+        request=real_llm.Request(kind="game", games=["Celeste", "The Expanse", "zzzz"])))
+    cards = reply.text.split("\n\n")
+    assert cards[0].startswith("Celeste — ⏳ pendiente")
+    assert cards[1].startswith("The Expanse: Osiris Reborn — 💜 lista de deseos")
+    assert cards[2] == "No encuentro «zzzz» en tu biblioteca ni en tu lista de deseos."
+    assert [n for _, n in reply.shown] == ["Celeste", "The Expanse: Osiris Reborn"]
+
+
+def test_free_text_wishlist():
+    reply = free_text(wish_store(), "¿qué me sale pronto?", llm=fake_llm(
+        request=real_llm.Request(kind="wishlist", upcoming=True)))
+    assert reply.text.startswith("Tu lista de deseos (4 juegos, 2 por salir)")
+    assert "Ya a la venta:" not in reply.text
+
+
+def test_wishlist_photos_come_from_the_wishlist_entry():
+    s = wish_store()
+    s.wishlist["100"]["images"] = {"header": "https://cdn/h.jpg"}
+    assert cmd_juego(s, "expanse").photos == [("https://cdn/h.jpg", "The Expanse: Osiris Reborn")]
+
+
+def test_juego_prefers_an_exact_wishlist_match_over_a_fuzzy_library_one():
+    """«football champions» está apuntado; «Football, Tactics & Glory» solo se parece."""
+    s = store()
+    s.backlog = s.backlog + make_backlog(("20", "Football, Tactics & Glory", "pendiente"))
+    s.wishlist = {"21": wish("21", "Football Champions", coming=True, note="Próximamente")}
+    reply = cmd_juego(s, "football champions")
+    assert reply.text.startswith("Football Champions — 💜 lista de deseos")
+    # Y al revés: lo que sí tiene no lo pierde por culpa de la lista de deseos.
+    assert cmd_juego(s, "football tactics").text.startswith("Football, Tactics & Glory — ⏳")
+
+
+def test_juego_still_prefers_the_library_when_both_match_exactly():
+    s = wish_store()
+    assert cmd_juego(s, "Hades").text.startswith("Hades — ⏳ pendiente")
+
+
+def test_juegos_prefers_what_was_just_shown():
+    s = wish_store()
+    reply = cmd_juegos(s, ["Hades", "Nesis"], shown=[("6", "Hades II")])
+    assert reply.text.startswith("Hades II — ⏳ pendiente")
+    assert [n for _, n in reply.shown] == ["Hades II", "Nesis"]

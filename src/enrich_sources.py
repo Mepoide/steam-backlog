@@ -1,5 +1,6 @@
-"""Fuentes de datos por juego: tienda de Steam (géneros), IStoreBrowseService
-(tags con peso y reseñas) y HowLongToBeat (duración).
+"""Fuentes de datos de Steam: tienda (géneros), IStoreBrowseService (tags con
+peso, reseñas, imágenes y fecha de salida), IWishlistService (lista de deseos) y
+HowLongToBeat (duración).
 
 Los parse_* son puros (testeables con respuestas grabadas); los fetch_* hacen la
 petición HTTP respetando un intervalo mínimo por servicio.
@@ -18,7 +19,9 @@ HLTB_MIN_SIMILARITY = 0.6
 STORE_URL = "https://store.steampowered.com/api/appdetails?appids={appid}&l=spanish&cc=es"
 ITEMS_URL = "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/?input_json={q}"
 TAGLIST_URL = "https://api.steampowered.com/IStoreService/GetTagList/v1/?language=spanish"
+WISHLIST_URL = "https://api.steampowered.com/IWishlistService/GetWishlist/v1/?steamid={steamid}"
 ITEMS_TAG_COUNT = 20
+ITEMS_BATCH = 50  # appids por petición de GetItems al pedir varias fichas a la vez
 ASSETS_CDN = "https://shared.akamai.steamstatic.com/store_item_assets/"
 ICON_CDN = "https://shared.akamai.steamstatic.com/community_assets/images/apps/{appid}/{icon}.jpg"
 # Nombre que usamos → campo de `assets` en GetItems. Tamaños: header 460×215,
@@ -110,35 +113,94 @@ def parse_items(payload: dict, tag_names: dict[int, str]) -> dict:
     except (KeyError, IndexError, TypeError) as e:
         raise SourceError("GetItems inesperado") from e
     out = {"tags": {}, "reviews_positive": None, "reviews_total": None, "images": {},
-           "deck": None, "early_access": False, "coming_soon": False, "release_date": None}
+           **parse_release({})}
     if item.get("success") != 1:
         return out  # appid inexistente o retirado: no es un fallo reintentable
     for t in item.get("tags") or []:
         name = tag_names.get(int(t["tagid"]))
         if name:
             out["tags"][name] = int(t.get("weight", 0))
-    summary = (item.get("reviews") or {}).get("summary_filtered")
-    if summary and summary.get("review_count") is not None:
-        total = int(summary["review_count"])
-        out["reviews_total"] = total
-        out["reviews_positive"] = round(total * int(summary.get("percent_positive", 0)) / 100)
+    out.update(parse_reviews(item))
     out["images"] = parse_assets(item)
     out.update(parse_release(item))
     return out
 
 
+def parse_reviews(item: dict) -> dict:
+    """Reseñas de un item de GetItems: total y cuántas son positivas."""
+    summary = (item.get("reviews") or {}).get("summary_filtered")
+    if not summary or summary.get("review_count") is None:
+        return {"reviews_positive": None, "reviews_total": None}
+    total = int(summary["review_count"])
+    return {"reviews_total": total,
+            "reviews_positive": round(total * int(summary.get("percent_positive", 0)) / 100)}
+
+
+def _date(ts) -> str | None:
+    return datetime.fromtimestamp(int(ts), timezone.utc).date().isoformat() if ts else None
+
+
 def parse_release(item: dict) -> dict:
-    """Compatibilidad con Steam Deck, acceso anticipado y fecha de salida en Steam."""
+    """Compatibilidad con Steam Deck, acceso anticipado y fecha de salida en Steam.
+
+    De lo que aún no ha salido, Steam da o un texto ya traducido
+    (`custom_release_date_message`: «Próximamente», «Por confirmarse») o una fecha
+    con la precisión que haya anunciado la editora (`coming_soon_display`:
+    `date_exact`, `date_month`, `date_quarter`, `date_year`). Se guardan los dos
+    para no dar por exacto un día que Steam solo usa de relleno.
+    """
     release = item.get("release") or {}
     deck = (item.get("platforms") or {}).get("steam_deck_compat_category")
-    ts = release.get("steam_release_date")
     return {
         "deck": int(deck) if deck is not None else None,
         "early_access": bool(item.get("is_early_access") or release.get("is_early_access")),
         "coming_soon": bool(item.get("is_coming_soon") or release.get("is_coming_soon")),
-        "release_date": (datetime.fromtimestamp(int(ts), timezone.utc).date().isoformat()
-                         if ts else None),
+        "release_date": _date(release.get("steam_release_date")),
+        "release_note": release.get("custom_release_date_message") or "",
+        "release_display": release.get("coming_soon_display") or "",
     }
+
+
+def parse_item_cards(payload: dict) -> dict[str, dict]:
+    """Ficha corta (nombre, reseñas, imágenes y fecha de salida) por appid.
+
+    Es lo que hace falta de los juegos que NO están en la biblioteca, como los de
+    la lista de deseos: ahí no hay horas jugadas ni perfil de gusto que puntuar,
+    así que no se piden tags ni duración.
+    """
+    try:
+        items = payload["response"]["store_items"]
+    except (KeyError, TypeError) as e:
+        raise SourceError("GetItems inesperado") from e
+    out = {}
+    for item in items or []:
+        appid = item.get("appid") or item.get("id")
+        if item.get("success") != 1 or not appid:
+            continue  # retirado o inexistente: se queda sin ficha, no es un fallo
+        card = {"name": item.get("name") or "", **parse_reviews(item), "images": parse_assets(item),
+                **parse_release(item)}
+        out[str(appid)] = card
+    return out
+
+
+def parse_wishlist(payload: dict) -> list[dict]:
+    """Lista de deseos de GetWishlist: [{appid, priority, added}], en el orden de Steam.
+
+    Una respuesta sin `items` no es un fallo: es lo que devuelve Steam cuando la
+    lista está vacía y también cuando el perfil no la comparte.
+    """
+    try:
+        items = (payload["response"] or {}).get("items") or []
+    except (KeyError, TypeError) as e:
+        raise SourceError("GetWishlist inesperado") from e
+    out = []
+    for item in items:
+        appid = item.get("appid")
+        if appid is None:
+            continue
+        out.append({"appid": str(appid), "priority": int(item.get("priority") or 0),
+                    "added": _date(item.get("date_added"))})
+    return out
 
 
 def clean_name(name: str) -> str:
@@ -163,16 +225,33 @@ def _tag_names() -> dict[int, str]:
     return _tag_names_cache
 
 
-def fetch_items(appid: str, name: str) -> dict:
+def items_url(appids) -> str:
     q = json.dumps({
-        "ids": [{"appid": int(appid)}],
+        "ids": [{"appid": int(a)} for a in appids],
         "context": {"language": "spanish", "country_code": "ES"},
         "data_request": {"include_tag_count": ITEMS_TAG_COUNT, "include_reviews": True,
                          "include_assets": True, "include_platforms": True,
                          "include_release": True},
     }, separators=(",", ":"))
-    url = ITEMS_URL.format(q=urllib.parse.quote(q))
-    return parse_items(_get_json(url, _STEAM_API), _tag_names())
+    return ITEMS_URL.format(q=urllib.parse.quote(q))
+
+
+def fetch_items(appid: str, name: str) -> dict:
+    return parse_items(_get_json(items_url([appid]), _STEAM_API), _tag_names())
+
+
+def fetch_item_cards(appids) -> dict[str, dict]:
+    """Fichas cortas de varios juegos, en lotes (una petición por lote de ITEMS_BATCH)."""
+    appids = [str(a) for a in appids]
+    out = {}
+    for i in range(0, len(appids), ITEMS_BATCH):
+        out.update(parse_item_cards(_get_json(items_url(appids[i:i + ITEMS_BATCH]), _STEAM_API)))
+    return out
+
+
+def fetch_wishlist(steamid: str) -> list[dict]:
+    """La lista de deseos del perfil. Pública: no lleva API key ni token."""
+    return parse_wishlist(_get_json(WISHLIST_URL.format(steamid=steamid), _STEAM_API))
 
 
 def fetch_hltb(appid: str, name: str) -> dict:

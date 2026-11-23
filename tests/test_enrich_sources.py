@@ -36,7 +36,8 @@ def test_parse_tag_list():
     assert all(isinstance(k, int) and isinstance(v, str) for k, v in names.items())
 
 
-NO_RELEASE = {"deck": None, "early_access": False, "coming_soon": False, "release_date": None}
+NO_RELEASE = {"deck": None, "early_access": False, "coming_soon": False, "release_date": None,
+              "release_note": "", "release_display": ""}
 
 
 def test_parse_release_deck_early_access_and_date():
@@ -44,7 +45,8 @@ def test_parse_release_deck_early_access_and_date():
             "platforms": {"windows": True, "steam_deck_compat_category": 2},
             "release": {"steam_release_date": 1773324148, "is_early_access": True}}
     assert parse_release(item) == {"deck": 2, "early_access": True, "coming_soon": False,
-                                   "release_date": "2026-03-12"}
+                                   "release_date": "2026-03-12", "release_note": "",
+                                   "release_display": ""}
 
 
 def test_parse_release_released_game():

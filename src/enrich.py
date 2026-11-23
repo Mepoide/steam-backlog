@@ -27,6 +27,7 @@ EMPTY = {
     "genres": [], "categories": [], "metacritic": None,
     "tags": {}, "reviews_positive": None, "reviews_total": None, "images": {},
     "deck": None, "early_access": False, "coming_soon": False, "release_date": None,
+    "release_note": "", "release_display": "",
     "hltb_main": None, "hltb_extra": None,
 }
 

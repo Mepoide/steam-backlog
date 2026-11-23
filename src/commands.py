@@ -10,7 +10,8 @@ import images
 import llm as llm_module
 import usage
 from config import BACKLOG_CSV, GAMES_JSON, PREFS_JSON, SCORES_JSON
-from library import ESTADOS, atomic_write_json, read_backlog, read_library, set_estado
+from library import (ESTADOS, atomic_write_json, read_backlog, read_library, read_wishlist,
+                     set_estado)
 from recommender import (STARTED_HOURS, Filters, Recommendation, fold, netflix_rows, recommend,
                          top_tags)
 
@@ -58,7 +59,7 @@ def _photos(store: "Store", items: list[tuple[str, str]], numbered: bool = True)
     """Cabecera de cada juego (si la tienda la tiene), con «1. Nombre» como pie."""
     out = []
     for i, (appid, name) in enumerate(items, 1):
-        url = images.image_url(store.games.get(appid, {}))
+        url = images.image_url(store.games.get(appid) or store.wishlist.get(appid) or {})
         if url:
             out.append((url, f"{i}. {name}" if numbered else name))
     return out[:MAX_PHOTOS]
@@ -75,6 +76,7 @@ class Store:
     backlog: list[dict]
     library: dict = field(default_factory=dict)  # export crudo: origen, horas y fechas
     prefs: dict = field(default_factory=dict)  # preferencias guardadas (p. ej. {"deck": "jugable"})
+    wishlist: dict = field(default_factory=dict)  # lista de deseos por appid (wishlist.py)
 
     @property
     def deck(self) -> str | None:
@@ -88,7 +90,7 @@ def _load_json(path) -> dict:
 def load_store() -> Store:
     return Store(games=_load_json(GAMES_JSON), scores=_load_json(SCORES_JSON),
                  backlog=read_backlog(BACKLOG_CSV), library=read_library(),
-                 prefs=_load_json(PREFS_JSON))
+                 prefs=_load_json(PREFS_JSON), wishlist=read_wishlist())
 
 
 def save_deck_pref(store: Store, deck: str | None, path=None) -> None:
@@ -129,6 +131,7 @@ def cmd_ayuda() -> Reply:
         "/juego <nombre> — ficha: horas jugadas, fechas, duración y reseñas\n"
         "/parecidos <juego> — lo de tu backlog que más se le parece\n"
         "/recientes — lo último que ha llegado a tu biblioteca\n"
+        "/deseos — tu lista de deseos, con lo que está por salir y cuándo\n"
         f"/marcar <juego> <estado> — estados: {ESTADOS_TXT}\n"
         "/repasar [nombre] — clasifica con botones los juegos que empezaste y siguen en pendiente "
         "(o solo los de un nombre o saga)\n"
@@ -141,11 +144,13 @@ def cmd_ayuda() -> Reply:
 def cmd_limites() -> Reply:
     return Reply(
         "Eso no lo puedo saber: Steam no comparte qué tienes instalado o descargado (ni en la "
-        "Steam Deck ni en el PC), el espacio libre, tus logros ni tus amigos. Tampoco veo tu "
-        "lista de deseos, noticias ni juegos que aún no tienes (fechas de salida, rumores).\n\n"
-        "Sí veo tu biblioteca (propia y familiar), tus horas y fechas, y de cada juego su "
-        "duración, reseñas, tags, si va en Steam Deck y si está en acceso anticipado. "
-        "Prueba «¿el Solasta II va en la Deck?» o «algo corto para la Deck»."
+        "Steam Deck ni en el PC), el espacio libre, tus logros, tus amigos ni los precios. "
+        "Tampoco veo noticias ni rumores: de un juego que aún no ha salido sé la fecha que "
+        "anuncie Steam, no lo que se cuente de él.\n\n"
+        "Sí veo tu biblioteca (propia y familiar), tu lista de deseos con sus fechas de salida, "
+        "tus horas y fechas, y de cada juego su duración, reseñas, tags, si va en Steam Deck y "
+        "si está en acceso anticipado. Prueba «¿el Solasta II va en la Deck?», «¿qué me sale "
+        "pronto?» o «algo corto para la Deck»."
     )
 
 
@@ -246,12 +251,17 @@ def cmd_buscar(store: Store, args: str) -> Reply:
                  shown=[(r["appid"], r["name"]) for r in rows])
 
 
-def _game_matches(backlog: list[dict], query: str, n: int = 3) -> list[dict]:
-    """Exacto primero y luego los que lo contienen: «hades» → Hades y Hades II."""
+def _strict_matches(rows: list[dict], query: str, n: int = 3) -> list[dict]:
+    """Exacto primero y luego los que lo contienen, sin búsqueda difusa:
+    «hades» → Hades y Hades II."""
     q = fold(query.strip())
-    exact = [r for r in backlog if fold(r["name"]) == q]
-    sub = [r for r in backlog if q in fold(r["name"]) and r not in exact]
-    return (exact + sub)[:n] or find_games(backlog, query, n=n)
+    exact = [r for r in rows if fold(r["name"]) == q]
+    sub = [r for r in rows if q in fold(r["name"]) and r not in exact]
+    return (exact + sub)[:n]
+
+
+def _game_matches(backlog: list[dict], query: str, n: int = 3) -> list[dict]:
+    return _strict_matches(backlog, query, n) or find_games(backlog, query, n=n)
 
 
 def _played(hours: float | None) -> str:
@@ -267,13 +277,70 @@ def _origin(lib: dict) -> str:
     return ""
 
 
+MONTHS = ("enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
+          "septiembre", "octubre", "noviembre", "diciembre")
+
+
+def _when(g: dict) -> str:
+    """La fecha de salida con la precisión que anunció la editora: el día, el mes, el
+    trimestre o el año. Cuando solo se sabe el mes, el día que manda Steam es relleno."""
+    date = g.get("release_date")
+    if not date:
+        return ""
+    year, month, _ = date.split("-")
+    display = g.get("release_display") or ""
+    if display == "date_year":
+        return year
+    if display == "date_quarter":
+        return f"Q{(int(month) - 1) // 3 + 1} de {year}"
+    if display == "date_month":
+        return f"{MONTHS[int(month) - 1]} de {year}"
+    return date
+
+
 def _release(g: dict) -> str:
     date = g.get("release_date")
     if g.get("coming_soon"):
-        return "Aún no ha salido" + (f" (prevista para {date})" if date else "")
+        # Steam da o un texto ya traducido («Próximamente», «Por confirmarse») o una fecha.
+        if note := (g.get("release_note") or "").strip():
+            return f"Aún no ha salido: {note}"
+        when = _when(g)
+        return "Aún no ha salido" + (f" (prevista para {when})" if when else "")
     if g.get("early_access"):
         return "En acceso anticipado" + (f" desde {date}" if date else "")
     return f"Salió el {date}" if date else ""
+
+
+def _wished(store: Store, appid: str) -> str:
+    """«💜 en tu lista de deseos desde el …», si está apuntado."""
+    entry = store.wishlist.get(appid)
+    if entry is None:
+        return ""
+    added = entry.get("added")
+    return "💜 En tu lista de deseos" + (f" desde el {added}" if added else "")
+
+
+def _reviews_line(g: dict) -> str:
+    total = g.get("reviews_total")
+    if not total:
+        return ""
+    return f"Reseñas: {round(100 * (g.get('reviews_positive') or 0) / total)} % 👍 de {total}"
+
+
+def _wish_detail(store: Store, appid: str) -> str:
+    """Ficha de un juego de la lista de deseos: no está en la biblioteca, así que no
+    hay horas ni estado, pero sí fecha de salida."""
+    entry = store.wishlist[appid]
+    added = entry.get("added")
+    lines = [f"{entry.get('name') or appid} — 💜 lista de deseos",
+             f"Apuntado el {added}" if added else ""]
+    release = _release(entry)
+    deck = DECK_LABEL.get(entry.get("deck"))
+    lines += [_reviews_line(entry),
+              " · ".join(x for x in (release, f"Steam Deck: {deck}" if deck else "") if x),
+              "No lo tienes, así que no entra en el backlog ni en las recomendaciones.",
+              f"https://store.steampowered.com/app/{appid}"]
+    return "\n".join(l for l in lines if l)
 
 
 def _detail(store: Store, row: dict, hint: bool = True) -> str:
@@ -287,9 +354,8 @@ def _detail(store: Store, row: dict, hint: bool = True) -> str:
     if g.get("hltb_main"):
         extra = f" · {_hours(g['hltb_extra'])} h con extras" if g.get("hltb_extra") else ""
         lines.append(f"Duración: {_hours(g['hltb_main'])} h historia principal (HowLongToBeat){extra}")
-    if g.get("reviews_total"):
-        pct = round(100 * g["reviews_positive"] / g["reviews_total"])
-        lines.append(f"Reseñas: {pct} % 👍 de {g['reviews_total']}")
+    if reviews := _reviews_line(g):
+        lines.append(reviews)
     tags = sorted((g.get("tags") or {}).items(), key=lambda kv: -kv[1])[:6]
     if tags:
         lines.append("Tags: " + ", ".join(t for t, _ in tags))
@@ -297,6 +363,9 @@ def _detail(store: Store, row: dict, hint: bool = True) -> str:
     deck = DECK_LABEL.get(g.get("deck"))
     if release or deck:
         lines.append(" · ".join(x for x in (release, f"Steam Deck: {deck}" if deck else "") if x))
+    # Un juego de la familiar puede seguir apuntado: lo tiene otro, no él.
+    if wished := _wished(store, appid):
+        lines.append(wished)
     if hint and row["estado"] == "pendiente" and (hours or 0) >= STARTED_HOURS:
         lines.append(f"Sigue en «pendiente» y no te lo recomiendo: /marcar {row['name']} jugando "
                      "(o terminado)")
@@ -304,14 +373,44 @@ def _detail(store: Store, row: dict, hint: bool = True) -> str:
     return "\n".join(lines)
 
 
+def _wish_rows(store: Store) -> list[dict]:
+    """La lista de deseos con la forma de las filas del backlog, para buscar en ella igual."""
+    return [{"appid": appid, "name": e["name"]} for appid, e in store.wishlist.items()
+            if e.get("name")]
+
+
+NOT_FOUND = "No encuentro «{}» en tu biblioteca ni en tu lista de deseos."
+
+
+def _lookup(store: Store, query: str, n: int = 3) -> tuple[str, list[dict]]:
+    """(«backlog» o «deseos», filas) del juego que mejor casa, con dos reglas: lo exacto
+    manda sobre lo difuso, y la biblioteca sobre la lista de deseos.
+
+    Así «¿cuándo sale el nuevo de The Expanse?» llega a la lista de deseos aunque la
+    búsqueda difusa le vea un parecido a algo del backlog, y «football champions» no
+    saca de la lista de deseos un juego que ya tiene con un nombre parecido."""
+    wish = _wish_rows(store)
+    for kind, rows in (("backlog", _strict_matches(store.backlog, query, n)),
+                       ("deseos", _strict_matches(wish, query, n)),
+                       ("backlog", find_games(store.backlog, query, n=n)),
+                       ("deseos", find_games(wish, query, n=n))):
+        if rows:
+            return kind, rows
+    return "", []
+
+
+def _card(store: Store, kind: str, row: dict) -> str:
+    return _detail(store, row) if kind == "backlog" else _wish_detail(store, row["appid"])
+
+
 def cmd_juego(store: Store, args: str) -> Reply:
     if not args.strip():
         return Reply("Uso: /juego <nombre>")
-    rows = _game_matches(store.backlog, args)
+    kind, rows = _lookup(store, args)
     if not rows:
-        return Reply(f"No encuentro «{args.strip()}» en tu biblioteca.")
+        return Reply(NOT_FOUND.format(args.strip()))
     shown = [(r["appid"], r["name"]) for r in rows]
-    return Reply("\n\n".join(_detail(store, r) for r in rows), shown=shown,
+    return Reply("\n\n".join(_card(store, kind, r) for r in rows), shown=shown,
                  photos=_photos(store, shown, numbered=False))
 
 
@@ -319,16 +418,18 @@ def cmd_juegos(store: Store, names: list[str], shown: list[tuple[str, str]] = ()
     """Fichas de varios juegos nombrados («awakened, chapter one y devils daughter»)."""
     if len(names) == 1:
         return cmd_juego(store, names[0])
-    rows, missing = [], []
+    parts, found, missing = [], [], []
     for name in names:
-        row = _resolve(store, name, list(shown))
-        if row is None:
+        # Lo que se acaba de mostrar manda; si no, se busca igual que en /juego.
+        row = _near(store, name, list(shown))
+        kind, rows = ("backlog", [row]) if row is not None else _lookup(store, name, n=1)
+        if not rows:
             missing.append(name)
-        elif row not in rows:
-            rows.append(row)
-    parts = [_detail(store, r) for r in rows] + [f"No encuentro «{m}» en tu biblioteca." for m in missing]
-    shown = [(r["appid"], r["name"]) for r in rows]
-    return Reply("\n\n".join(parts), shown=shown, photos=_photos(store, shown, numbered=False))
+        elif rows[0]["appid"] not in {appid for appid, _ in found}:
+            found.append((rows[0]["appid"], rows[0]["name"]))
+            parts.append(_card(store, kind, rows[0]))
+    parts += [NOT_FOUND.format(m) for m in missing]
+    return Reply("\n\n".join(parts), shown=found, photos=_photos(store, found, numbered=False))
 
 
 def cmd_parecidos(store: Store, args: str) -> Reply:
@@ -378,6 +479,70 @@ def cmd_recientes(store: Store, limit: int = 10) -> Reply:
     return Reply("\n".join(lines), shown=[(appid, v["name"]) for _, appid, v in dated])
 
 
+WISHLIST_LIMIT = 15
+NO_WISHLIST = ("No tengo tu lista de deseos: ejecuta wishlist.py (o espera al job diario). "
+               "Steam solo la comparte si «Detalles de juegos» de tu perfil está en Público.")
+
+
+def _wish_sort_key(entry: dict) -> tuple:
+    """Lo que antes salga primero; lo que no tiene fecha, al final del grupo."""
+    date = entry.get("release_date") or ""
+    return (not date, date, entry.get("name") or "")
+
+
+def _when_phrase(entry: dict) -> str:
+    """«Próximamente», «sale el 2027-03-15» o «sale en marzo de 2027»."""
+    if note := (entry.get("release_note") or "").strip():
+        return note
+    when = _when(entry)
+    if not when:
+        return "sin fecha"
+    return f"sale el {when}" if when == entry.get("release_date") else f"sale en {when}"
+
+
+def _wish_line(entry: dict) -> str:
+    """Una línea de /deseos: lo que sale pronto con su fecha, lo demás con sus reseñas."""
+    parts = []
+    if entry.get("coming_soon"):
+        parts.append(_when_phrase(entry))
+    else:
+        total = entry.get("reviews_total")
+        parts.append(f"{round(100 * (entry.get('reviews_positive') or 0) / total)} % 👍"
+                     if total else "sin reseñas")
+    if mark := DECK_MARK.get(entry.get("deck")):
+        parts.append(mark)
+    if entry.get("early_access"):
+        parts.append("acceso anticipado")
+    if added := entry.get("added"):
+        parts.append(f"apuntado el {added}")
+    return f"{entry.get('name') or entry['appid']} — " + " · ".join(parts)
+
+
+def cmd_deseos(store: Store, limit: int = WISHLIST_LIMIT, upcoming: bool = False) -> Reply:
+    """La lista de deseos: primero lo que aún no ha salido, por fecha de salida."""
+    if not store.wishlist:
+        return Reply(NO_WISHLIST)
+    coming = sorted((e for e in store.wishlist.values() if e.get("coming_soon")), key=_wish_sort_key)
+    out = sorted((e for e in store.wishlist.values() if not e.get("coming_soon")),
+                 key=lambda e: e.get("added") or "", reverse=True)  # lo último apuntado primero
+    if upcoming:
+        if not coming:
+            return Reply(f"De los {len(store.wishlist)} juegos de tu lista de deseos ya han "
+                         "salido todos.")
+        out = []
+    blocks, shown = [], []
+    for title, entries in (("Por salir:", coming[:limit]),
+                           ("Ya a la venta:", out[:max(limit - len(coming), 0)])):
+        if not entries:
+            continue
+        blocks.append(title + "\n" + "\n".join(f"{i}. {_wish_line(e)}"
+                                               for i, e in enumerate(entries, 1)))
+        shown += [(e["appid"], e.get("name") or e["appid"]) for e in entries]
+    head = f"Tu lista de deseos ({len(store.wishlist)} juegos, {len(coming)} por salir)"
+    return Reply(head + "\n\n" + "\n\n".join(blocks), shown=shown,
+                 photos=_photos(store, shown, numbered=False))
+
+
 def cmd_marcar(store: Store, args: str) -> Reply:
     words = args.split()
     if len(words) < 2:
@@ -397,13 +562,19 @@ def cmd_marcar(store: Store, args: str) -> Reply:
                  [(r["name"], f"mark:{r['appid']}:{estado}") for r in found] + [cancel])
 
 
-def _resolve(store: Store, name: str, shown: list[tuple[str, str]]) -> dict | None:
-    """Nombre que dio el LLM → fila del backlog, priorizando lo que se acaba de mostrar."""
+def _near(store: Store, name: str, shown: list[tuple[str, str]]) -> dict | None:
+    """Fila del backlog de un juego que el bot acaba de mostrar, si solo casa uno."""
     q = fold(name)
     by_id = {r["appid"]: r for r in store.backlog}
     near = [a for a, n in shown if fold(n) == q] or [a for a, n in shown if q in fold(n)]
-    if len(near) == 1 and near[0] in by_id:
-        return by_id[near[0]]
+    return by_id[near[0]] if len(near) == 1 and near[0] in by_id else None
+
+
+def _resolve(store: Store, name: str, shown: list[tuple[str, str]]) -> dict | None:
+    """Nombre que dio el LLM → fila del backlog, priorizando lo que se acaba de mostrar."""
+    row = _near(store, name, shown)
+    if row is not None:
+        return row
     found = _game_matches(store.backlog, name, n=1)
     return found[0] if found else None
 
@@ -656,6 +827,9 @@ def free_text(store: Store, text: str, llm=llm_module, history: list[dict] | Non
     if request.kind == "recent":
         log.info("Texto libre «%s» → recientes (%d)", text, request.limit)
         return cmd_recientes(store, request.limit)
+    if request.kind == "wishlist":
+        log.info("Texto libre «%s» → lista de deseos (upcoming=%s)", text, request.upcoming)
+        return cmd_deseos(store, upcoming=request.upcoming)
     if request.kind == "mark":
         log.info("Texto libre «%s» → marcar %s", text, request.marks)
         return plan_marks(store, request.marks, _last_shown(history))

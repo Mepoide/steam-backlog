@@ -19,7 +19,8 @@ dejaron a medias. Cuando hay un rato para jugar, cuesta elegir.
 
 1. **Inventario.** Un job diario exporta la biblioteca, la propia y la familiar,
    y la mantiene en `backlog.csv` con un estado por juego (`pendiente`,
-   `jugando`, `terminado`, `abandonado` o `descartado`).
+   `jugando`, `terminado`, `abandonado` o `descartado`). Del mismo tirón lee la
+   lista de deseos, con la fecha de salida de lo que todavía no está.
 2. **Enriquecimiento.** Por cada juego obtiene sus géneros, sus tags con peso,
    sus reseñas y su duración en HowLongToBeat.
 3. **Perfil de gusto.** Cruza las horas jugadas con los tags de cada juego y lo
@@ -27,7 +28,8 @@ dejaron a medias. Cuando hay un rato para jugar, cuesta elegir.
    motivo («porque jugaste X»), al estilo de Netflix.
 4. **Bot de Telegram.** Se le habla por comandos o con texto libre: «algo
    tranquilo», «rol por turnos parecido al Baldur's Gate 3», «¿esos los tengo?»,
-   «me he pasado el Awakened». Recomienda, enseña fichas y cambia estados.
+   «me he pasado el Awakened», «¿cuándo sale el nuevo de The Expanse?».
+   Recomienda, enseña fichas y cambia estados.
 
 ### Principios de diseño
 
@@ -49,7 +51,7 @@ dejaron a medias. Cuando hay un rato para jugar, cuesta elegir.
 ```mermaid
 flowchart LR
     subgraph Fuentes externas
-        SAPI[Steam Web API<br/>GetOwnedGames<br/>IFamilyGroupsService]
+        SAPI[Steam Web API<br/>GetOwnedGames<br/>IFamilyGroupsService<br/>IWishlistService]
         STORE[Tienda Steam<br/>appdetails]
         ISB[IStoreBrowseService<br/>GetItems + GetTagList]
         HLTB[HowLongToBeat]
@@ -59,7 +61,7 @@ flowchart LR
     end
 
     subgraph Job diario 06:00
-        EXP[export.py] --> SYNC[sync_backlog.py] --> ENR[enrich.py] --> TASTE[taste.py] --> GIT[git_sync.py]
+        EXP[export.py] --> WISH[wishlist.py] --> SYNC[sync_backlog.py] --> ENR[enrich.py] --> TASTE[taste.py] --> GIT[git_sync.py]
     end
 
     subgraph Bot siempre activo
@@ -72,6 +74,7 @@ flowchart LR
     end
 
     SAPI --> EXP
+    SAPI & ISB --> WISH
     STORE & ISB & HLTB --> ENR
     LLM <--> CLAUDE
     BOT <--> TG
@@ -85,9 +88,10 @@ flowchart LR
 | `src/config.py` | Rutas del proyecto y carga de `.env` | — |
 | `src/export.py` | Steam API → `data/raw/steam_library.{csv,json}` (solo librería estándar) | Steam |
 | `src/sync_backlog.py` | Añade los juegos nuevos a `backlog.csv` como `pendiente`; nunca toca las filas que ya existen | — |
-| `src/enrich_sources.py` | Clientes HTTP de cada fuente, con `parse_*` puros (se prueban con respuestas grabadas) y `fetch_*` con límite de ritmo | tienda, IStoreBrowse, HLTB |
+| `src/enrich_sources.py` | Clientes HTTP de cada fuente, con `parse_*` puros (se prueban con respuestas grabadas) y `fetch_*` con límite de ritmo | tienda, IStoreBrowse, IWishlist, HLTB |
 | `src/enrich.py` | Caché por appid en `games.json`; solo pide lo que falta | enrich_sources |
-| `src/library.py` | Lee y escribe `backlog.csv` (escritura atómica), horas jugadas y la vista de solo lectura de la biblioteca | config |
+| `src/wishlist.py` | Lista de deseos + ficha de cada juego (nombre y fecha de salida) → `data/raw/wishlist.json` | enrich_sources, library |
+| `src/library.py` | Lee y escribe `backlog.csv` (escritura atómica), horas jugadas, la vista de solo lectura de la biblioteca y la lista de deseos | config |
 | `src/taste.py` | Perfil de gusto y puntuación de los pendientes → `profile.json`, `scores.json` | library |
 | `src/recommender.py` | Filtros, ranking, variedad y filas «Netflix». Puro: no sabe nada de Telegram ni del LLM | taste (vectores) |
 | `src/llm.py` | Texto libre → `Request` (con tool use) e intro breve; comprueba el presupuesto antes de cada llamada | anthropic, usage |
@@ -110,11 +114,13 @@ backlog.csv                      ← VERSIONADO. appid, name, estado, prioridad,
 .env                             ← claves (ignorado)
 data/                            ← todo ignorado
 ├── raw/steam_library.csv|json   ← export: origen, horas, fechas y dueños (SteamIDs)
+├── raw/wishlist.json            ← lista de deseos: appid, prioridad, cuándo se apuntó,
+│                                  nombre, reseñas, imágenes, deck y fecha de salida
 ├── enriched/
 │   ├── games.json               ← por appid: géneros, categorías, tags{nombre: peso},
 │   │                              reseñas, hltb_main/extra, images{tipo: URL},
-│   │                              deck, early_access, release_date, items_at,
-│   │                              fuentes que faltan
+│   │                              deck, early_access, release_date/note/display,
+│   │                              items_at, fuentes que faltan
 │   ├── playtime_cache.json      ← horas de juegos que desaparecen del export
 │   ├── profile.json             ← vector de gusto {tag: peso}
 │   └── scores.json              ← por pendiente: score, sim, quality, ancla, tags
@@ -274,7 +280,7 @@ sequenceDiagram
     B->>C: texto + historial (3 turnos y juegos mostrados)
     C->>L: parse_request(texto, tags conocidos, historial)
     L->>L: ¿queda presupuesto?
-    L->>A: system (reglas + 331 tags) + 8 herramientas, tool_choice=any
+    L->>A: system (reglas + 331 tags) + 9 herramientas, tool_choice=any
     A-->>L: set_filters{include_tags, like_game:"Baldur's Gate 3"}
     L-->>C: Request(kind=recommend, filters, game)
     C->>C: resuelve «Baldur's Gate 3» → appid
@@ -292,7 +298,7 @@ sequenceDiagram
 
 ## 3. Algoritmos
 
-### 3.1 Export y biblioteca familiar
+### 3.1 Export, biblioteca familiar y lista de deseos
 
 - Los juegos propios salen de `IPlayerService/GetOwnedGames`, con horas
   exactas y última partida.
@@ -327,12 +333,36 @@ sequenceDiagram
 - Las fechas anteriores al lanzamiento de Steam (2003-09-12) se descartan: la
   API a veces devuelve `1970-01-01`.
 
+#### La lista de deseos (`wishlist.py`)
+
+- `IWishlistService/GetWishlist/v1` va con el `STEAM_ID` y **sin API key ni
+  token**, pero solo responde si «Detalles de juegos» del perfil está en
+  Público. Devuelve `appid`, `priority` y `date_added`: **ni un nombre**.
+- Los nombres (y las reseñas, las imágenes, la compatibilidad con Deck y la
+  fecha de salida) salen de `IStoreBrowseService/GetItems`, que acepta **varios
+  appids en una sola petición**: la lista entera se resuelve en lotes de 50
+  (`fetch_item_cards`), no en una petición por juego. De estos juegos no se
+  piden tags ni duración: no están en la biblioteca, así que no hay nada que
+  puntuar.
+- Una respuesta vacía **no es un fallo**: es lo que devuelve Steam con la lista
+  vacía y también con el perfil cerrado, así que el aviso lo dice en vez de
+  reventar. Si la petición falla, la escritura es atómica y se conserva la lista
+  de ayer.
+- **La precisión de la fecha se respeta.** De lo que aún no ha salido, Steam da
+  o un texto ya traducido (`custom_release_date_message`: «Próximamente», «Por
+  confirmarse») o una fecha con la precisión que haya anunciado la editora
+  (`coming_soon_display`: `date_exact`, `date_month`, `date_quarter`,
+  `date_year`). Se guardan los dos (`release_note`, `release_display`) porque
+  con precisión de mes el día que manda Steam es de relleno: el bot dice «marzo
+  de 2027», no «2027-03-20».
+
 ### 3.2 Enriquecimiento
 
 | Fuente | Datos | Ritmo |
 |---|---|---|
 | `store.steampowered.com/api/appdetails` (`l=spanish`) | géneros, categorías («Un jugador»…), metacritic | 1 petición cada 1,5 s |
-| `IStoreBrowseService/GetItems` + `GetTagList` | hasta 20 tags **con peso** y en español, reseñas (total y % positivo), **imágenes** (`include_assets`), compatibilidad con **Steam Deck** (`include_platforms`), acceso anticipado y fecha de salida (`include_release`) | 1 por segundo |
+| `IStoreBrowseService/GetItems` + `GetTagList` | hasta 20 tags **con peso** y en español, reseñas (total y % positivo), **imágenes** (`include_assets`), compatibilidad con **Steam Deck** (`include_platforms`), acceso anticipado y fecha de salida con su precisión (`include_release`) | 1 por segundo |
+| `IWishlistService/GetWishlist` | la lista de deseos: appid, prioridad y cuándo se apuntó (ver 3.1) | 1 por segundo |
 | HowLongToBeat (`howlongtobeatpy`) | horas de la historia principal y con extras | 1 por segundo |
 
 - Hay una **caché incremental**: cada entrada guarda en `missing` las fuentes
@@ -466,18 +496,19 @@ lo dice en la primera línea.
 ### 3.6 Texto libre con Claude (`llm.py`)
 
 Se hace una llamada de **parseo** con `tool_choice: any`, que obliga a usar una
-de las ocho herramientas y no a contestar en prosa:
+de las nueve herramientas y no a contestar en prosa:
 
 | Herramienta | Cuándo | Resultado |
 |---|---|---|
 | `set_filters` | Qué jugar, géneros, duración, «parecido a X», origen (`source`), orden (`sort`), Steam Deck (`deck`, y `remember` si es norma) | `Request(kind="recommend", filters, game=X, source, deck, remember)` |
-| `game_info` | Pregunta por uno o varios juegos concretos | una ficha por juego (hasta 5) |
+| `game_info` | Pregunta por uno o varios juegos concretos, los tenga o no | una ficha por juego (hasta 5); si no está en la biblioteca, la de su lista de deseos |
 | `review_games` | «Repasemos los de Sherlock Holmes» | repaso con botones, filtrado por nombre |
 | `recent_games` | Qué ha llegado a la biblioteca hace poco | lista por fecha de adquisición |
 | `mark_games` | «Me he pasado X», «Y me aburre», «márcalos» | cambios de estado que se confirman con un botón |
 | `last_results` | «¿Esos los tengo?», «¿cuánto duran?» | origen, duración y horas de lo último mostrado |
 | `game_status` | «Dame sus estados», «¿cómo tengo los de Sherlock?» | estado de los juegos de un nombre o saga; sin nombre (o si no casa), los últimos mostrados o tocados con botones |
-| `bot_help` | Saludos, «qué puedes hacer», «cuánto llevo gastado», o algo que el bot no puede saber (`limites`: lo instalado en la Deck, espacio, logros, amigos, precios) | la ayuda, `/coste` o qué puede y qué no puede ver |
+| `wishlist_info` | «¿Qué tengo apuntado?», «¿qué me sale pronto?» (`upcoming`) | la lista de deseos, lo que está por salir primero |
+| `bot_help` | Saludos, «qué puedes hacer», «cuánto llevo gastado», o algo que el bot no puede saber (`limites`: lo instalado en la Deck, espacio, logros, amigos, precios, noticias y rumores) | la ayuda, `/coste` o qué puede y qué no puede ver |
 
 - **Contexto.** El prompt de sistema incluye **todos** los tags conocidos (331),
   para que el modelo copie nombres reales y no los invente. El mensaje del
@@ -491,8 +522,9 @@ de las ocho herramientas y no a contestar en prosa:
   marcas, porque el `callback_data` de Telegram tiene un límite de 64 bytes:
   `marks:350640=t,1949030=t,…`.
 - **Resolución de nombres.** Lo que nombra el modelo se busca primero entre los
-  juegos que se acaban de mostrar (nombre exacto o contenido) y después en todo
-  el backlog.
+  juegos que se acaban de mostrar (nombre exacto o contenido), después en todo
+  el backlog y, si no está, en la lista de deseos: de ahí sale la ficha de un
+  juego que todavía no tiene.
 - **Intro.** Una segunda llamada con `effort: low` escribe 1-2 frases sobre la
   lista ya elegida. Recibe la duración, los tags, la compatibilidad con Steam
   Deck y si está en acceso anticipado de cada juego, con la orden de no afirmar
@@ -511,6 +543,19 @@ Se aplica en orden y se para en el primer paso que encuentra algo:
    (difflib ≥ 0,8) a alguna del nombre. «chapters one» encuentra «Sherlock
    Holmes Chapter One» y «devils daughter» encuentra «The Devil's Daughter».
 4. Parecido del nombre completo (difflib ≥ 0,6).
+
+En el paso 4 no cuentan los artículos ni las preposiciones (`the`, `of`, `el`,
+`de`…): el «The» compartido hacía que «The Expanse» se pareciera a The Ascent,
+a The Cave y a The Spatials.
+
+Al pedir una ficha se busca en dos sitios, con dos reglas (`_lookup`): **lo
+exacto manda sobre lo difuso** (pasos 1-2 antes que 3-4) y **la biblioteca
+sobre la lista de deseos**. Es decir: biblioteca exacta → deseos exacta →
+biblioteca difusa → deseos difusa. Así «¿cuándo sale el nuevo de The Expanse?»
+llega a la lista de deseos aunque el paso 4 le vea un parecido con algo del
+backlog, y «football champions» (apuntado) no se convierte en el «Football,
+Tactics & Glory» que ya tiene. En el texto libre, antes de todo eso manda lo
+que el bot acaba de mostrar.
 
 ### 3.8 Repaso (`/repasar`)
 
@@ -596,6 +641,8 @@ biblioteca y viven en `data/` (ignorado), nunca en el repositorio público.
 | Falla la familiar con el token recién renovado | El aviso dice que el token está bien y que no hay que tocar nada: se reintenta mañana |
 | Una imagen no carga en Telegram | Se envía la respuesta sin imágenes |
 | Una fuente del enriquecimiento cae o devuelve 429 | La fuente queda en `missing` y se reintenta al día siguiente |
+| Falla la lista de deseos, o el perfil deja de compartirla | El job sigue (`\|\| echo` en `daily.sh`) y se conserva `wishlist.json` de ayer. Si Steam responde una lista vacía, `/deseos` explica que hay que poner «Detalles de juegos» en Público |
+| Un juego de la lista de deseos sin ficha en la tienda (retirado, otra región) | Se guarda igual, con el appid y sin nombre: no desaparece de la lista |
 | Claude no responde, no hay clave o se agota el presupuesto | Recomendaciones «Para ti» con un aviso. Los comandos con `/` no se ven afectados |
 | Falla solo la intro | Se envía la lista sin la frase |
 | Falla el push a GitHub | El cambio se queda en local («queda en local») y lo sube el siguiente `git_sync` |
@@ -623,9 +670,13 @@ biblioteca y viven en `data/` (ignorado), nunca en el repositorio público.
 
 ## 6. Pruebas
 
-`pytest` (unos 225 tests) sin red:
+`pytest` (unos 250 tests) sin red:
 
-- **Fuentes:** respuestas grabadas en `tests/fixtures/`.
+- **Fuentes:** respuestas grabadas en `tests/fixtures/`. Las de la lista de
+  deseos son respuestas **reales** de `GetItems` con varios appids a la vez:
+  una con un juego que existe y otro que no, y otra con los tres casos de lo que
+  aún no ha salido (fecha al mes, «Próximamente» y «Por confirmarse»), para fijar
+  cómo se lee la precisión de la fecha.
 - **LLM:** un cliente falso que devuelve llamadas a herramientas. Se comprueban
   las herramientas enviadas, el contexto, la validación y el registro de uso.
 - **Comandos y texto libre:** un `Store` en memoria y un módulo `llm` falso.
@@ -661,6 +712,15 @@ antes de cada entrega.
   `ajaxgetasyncconfig`) y de que Steam no pida verificación de navegador. Si un
   día deja de funcionar, el `STEAM_WEBAPI_TOKEN` manual sigue siendo el plan B y
   el aviso de Telegram lo explica.
+- La lista de deseos solo se lee si «Detalles de juegos» del perfil está en
+  Público; con el perfil cerrado Steam responde una lista vacía y no hay forma
+  de distinguirlo de no tener nada apuntado (se avisa de las dos cosas a la vez).
+  El canje contra la API real está comprobado desde aquí para `GetItems`, pero
+  `GetWishlist` solo se ha podido probar con perfiles sin lista: la primera
+  ejecución en el Mac es la que confirma que llegan los juegos.
+- Nadie avisa cuando sale un juego de la lista de deseos: hay que preguntar
+  («¿qué me sale pronto?») o mirar `/deseos`. El dato ya está en
+  `wishlist.json`, así que el aviso sería cosa de `notify.py`.
 - La memoria de la conversación vive en RAM y se pierde al reiniciar el bot.
 - Las opiniones («me gustan») no se guardan como tales: solo influyen a través
   del estado. Podrían guardarse en la columna `notas`.
