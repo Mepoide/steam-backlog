@@ -5,6 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 RAW_CSV = DATA_DIR / "raw" / "steam_library.csv"
+WISHLIST_JSON = DATA_DIR / "raw" / "wishlist.json"
 ENRICHED_DIR = DATA_DIR / "enriched"
 GAMES_JSON = ENRICHED_DIR / "games.json"
 PROFILE_JSON = ENRICHED_DIR / "profile.json"

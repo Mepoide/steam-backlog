@@ -1,0 +1,223 @@
+{
+ "response": {
+  "store_items": [
+   {
+    "item_type": 0,
+    "id": 2050650,
+    "success": 1,
+    "visible": true,
+    "name": "Resident Evil 4",
+    "store_url_path": "app/2050650/Resident_Evil_4",
+    "store_url_slug": "Resident_Evil_4",
+    "appid": 2050650,
+    "type": 0,
+    "related_items": {
+     "demo_appid": [
+      2231770
+     ],
+     "standalone_demo_appid": [
+      2231770
+     ],
+     "demos": [
+      {
+       "appid": 2231770,
+       "show_above_purchase": true
+      }
+     ],
+     "standalone_demos": [
+      {
+       "appid": 2231770,
+       "show_above_purchase": true
+      }
+     ]
+    },
+    "content_descriptorids": [
+     2,
+     5
+    ],
+    "tagids": [
+     1667,
+     19,
+     3978,
+     3814,
+     4182,
+     1659,
+     1742,
+     1662,
+     5708,
+     4342,
+     4145,
+     4345,
+     21978,
+     1697,
+     4175,
+     8945,
+     21,
+     4106,
+     4667,
+     1721
+    ],
+    "categories": {
+     "supported_player_categoryids": [
+      2
+     ],
+     "feature_categoryids": [
+      22,
+      29,
+      23,
+      61,
+      62
+     ],
+     "controller_categoryids": [
+      28
+     ]
+    },
+    "reviews": {
+     "summary_filtered": {
+      "review_count": 195974,
+      "percent_positive": 97,
+      "review_score": 9,
+      "review_score_label": "Extremadamente positivas"
+     },
+     "summary_language_specific": {
+      "review_count": 18280,
+      "percent_positive": 99,
+      "review_score": 9,
+      "review_score_label": "Extremadamente positivas"
+     }
+    },
+    "tags": [
+     {
+      "tagid": 1667,
+      "weight": 869
+     },
+     {
+      "tagid": 19,
+      "weight": 818
+     },
+     {
+      "tagid": 3978,
+      "weight": 765
+     },
+     {
+      "tagid": 3814,
+      "weight": 760
+     },
+     {
+      "tagid": 4182,
+      "weight": 709
+     },
+     {
+      "tagid": 1659,
+      "weight": 655
+     },
+     {
+      "tagid": 1742,
+      "weight": 619
+     },
+     {
+      "tagid": 1662,
+      "weight": 486
+     },
+     {
+      "tagid": 5708,
+      "weight": 417
+     },
+     {
+      "tagid": 4342,
+      "weight": 412
+     },
+     {
+      "tagid": 4145,
+      "weight": 397
+     },
+     {
+      "tagid": 4345,
+      "weight": 365
+     },
+     {
+      "tagid": 21978,
+      "weight": 362
+     },
+     {
+      "tagid": 1697,
+      "weight": 362
+     },
+     {
+      "tagid": 4175,
+      "weight": 353
+     },
+     {
+      "tagid": 8945,
+      "weight": 346
+     },
+     {
+      "tagid": 21,
+      "weight": 338
+     },
+     {
+      "tagid": 4106,
+      "weight": 328
+     },
+     {
+      "tagid": 4667,
+      "weight": 322
+     },
+     {
+      "tagid": 1721,
+      "weight": 309
+     }
+    ],
+    "assets": {
+     "asset_url_format": "steam/apps/2050650/${FILENAME}?t=1772502922",
+     "main_capsule": "capsule_616x353.jpg",
+     "small_capsule": "capsule_231x87.jpg",
+     "header": "header.jpg",
+     "page_background": "page_bg_generated_v6b.jpg",
+     "hero_capsule": "hero_capsule.jpg",
+     "library_capsule": "library_600x900.jpg",
+     "library_capsule_2x": "library_600x900_2x.jpg",
+     "library_hero": "library_hero.jpg",
+     "library_hero_2x": "library_hero_2x.jpg",
+     "community_icon": "817358b8013c55831ea10d031ef9c0b151110826",
+     "page_background_path": "app/2050650?t=1772502922",
+     "raw_page_background": "page_bg_raw.jpg",
+     "last_modified": 1772502922
+    },
+    "release": {
+     "steam_release_date": 1679616000
+    },
+    "platforms": {
+     "windows": true,
+     "vr_support": {},
+     "steam_deck_compat_category": 3,
+     "steam_os_compat_category": 2,
+     "steam_frame_compat_category": 1,
+     "steam_machine_compat_category": 3
+    },
+    "best_purchase_option": {
+     "packageid": 794618,
+     "purchase_option_name": "Resident Evil 4",
+     "final_price_in_cents": "3999",
+     "formatted_final_price": "39,99€",
+     "user_can_purchase_as_gift": true,
+     "hide_discount_pct_for_compliance": false,
+     "included_game_count": 1,
+     "must_purchase_as_set": false,
+     "package_group": "default",
+     "price_cannot_be_displayed_as_discount": false
+    }
+   },
+   {
+    "item_type": 0,
+    "id": 999999991,
+    "success": 15,
+    "visible": false,
+    "name": "",
+    "store_url_path": "app/0/",
+    "store_url_slug": "",
+    "appid": 0
+   }
+  ]
+ }
+}

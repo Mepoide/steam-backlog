@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from config import BACKLOG_CSV, PLAYTIME_CACHE, RAW_CSV
+from config import BACKLOG_CSV, PLAYTIME_CACHE, RAW_CSV, WISHLIST_JSON
 
 FIELDS = ["appid", "name", "estado", "prioridad", "notas"]
 ESTADOS = frozenset({"pendiente", "jugando", "terminado", "abandonado", "descartado"})
@@ -86,6 +86,15 @@ def read_library(raw_csv=RAW_CSV) -> dict[str, dict]:
                 "acquired": _parse_date(row.get("acquired") or ""),
             }
     return out
+
+
+def read_wishlist(path=WISHLIST_JSON) -> dict[str, dict]:
+    """Lista de deseos por appid (la escribe wishlist.py); {} si aún no se ha generado."""
+    path = Path(path)
+    if not path.exists():
+        return {}
+    entries = json.loads(path.read_text(encoding="utf-8"))
+    return {str(e["appid"]): e for e in entries if e.get("appid")}
 
 
 def load_playtime(raw_csv=RAW_CSV, cache_path=PLAYTIME_CACHE) -> dict[str, Playtime]:
