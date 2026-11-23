@@ -251,12 +251,17 @@ def cmd_buscar(store: Store, args: str) -> Reply:
                  shown=[(r["appid"], r["name"]) for r in rows])
 
 
-def _game_matches(backlog: list[dict], query: str, n: int = 3) -> list[dict]:
-    """Exacto primero y luego los que lo contienen: «hades» → Hades y Hades II."""
+def _strict_matches(rows: list[dict], query: str, n: int = 3) -> list[dict]:
+    """Exacto primero y luego los que lo contienen, sin búsqueda difusa:
+    «hades» → Hades y Hades II."""
     q = fold(query.strip())
-    exact = [r for r in backlog if fold(r["name"]) == q]
-    sub = [r for r in backlog if q in fold(r["name"]) and r not in exact]
-    return (exact + sub)[:n] or find_games(backlog, query, n=n)
+    exact = [r for r in rows if fold(r["name"]) == q]
+    sub = [r for r in rows if q in fold(r["name"]) and r not in exact]
+    return (exact + sub)[:n]
+
+
+def _game_matches(backlog: list[dict], query: str, n: int = 3) -> list[dict]:
+    return _strict_matches(backlog, query, n) or find_games(backlog, query, n=n)
 
 
 def _played(hours: float | None) -> str:
@@ -326,7 +331,9 @@ def _wish_detail(store: Store, appid: str) -> str:
     """Ficha de un juego de la lista de deseos: no está en la biblioteca, así que no
     hay horas ni estado, pero sí fecha de salida."""
     entry = store.wishlist[appid]
-    lines = [f"{entry.get('name') or appid} — 💜 lista de deseos", _wished(store, appid)]
+    added = entry.get("added")
+    lines = [f"{entry.get('name') or appid} — 💜 lista de deseos",
+             f"Apuntado el {added}" if added else ""]
     release = _release(entry)
     deck = DECK_LABEL.get(entry.get("deck"))
     lines += [_reviews_line(entry),
@@ -372,40 +379,39 @@ def _wish_rows(store: Store) -> list[dict]:
             if e.get("name")]
 
 
-def _wish_matches(store: Store, query: str, n: int = 3) -> list[str]:
-    """appids de la lista de deseos que casan con el nombre."""
-    return [r["appid"] for r in _game_matches(_wish_rows(store), query, n=n)]
-
-
 NOT_FOUND = "No encuentro «{}» en tu biblioteca ni en tu lista de deseos."
+
+
+def _lookup(store: Store, query: str, n: int = 3) -> tuple[str, list[dict]]:
+    """(«backlog» o «deseos», filas) del juego que mejor casa, con dos reglas: lo exacto
+    manda sobre lo difuso, y la biblioteca sobre la lista de deseos.
+
+    Así «¿cuándo sale el nuevo de The Expanse?» llega a la lista de deseos aunque la
+    búsqueda difusa le vea un parecido a algo del backlog, y «football champions» no
+    saca de la lista de deseos un juego que ya tiene con un nombre parecido."""
+    wish = _wish_rows(store)
+    for kind, rows in (("backlog", _strict_matches(store.backlog, query, n)),
+                       ("deseos", _strict_matches(wish, query, n)),
+                       ("backlog", find_games(store.backlog, query, n=n)),
+                       ("deseos", find_games(wish, query, n=n))):
+        if rows:
+            return kind, rows
+    return "", []
+
+
+def _card(store: Store, kind: str, row: dict) -> str:
+    return _detail(store, row) if kind == "backlog" else _wish_detail(store, row["appid"])
 
 
 def cmd_juego(store: Store, args: str) -> Reply:
     if not args.strip():
         return Reply("Uso: /juego <nombre>")
-    rows = _game_matches(store.backlog, args)
-    if rows:
-        shown = [(r["appid"], r["name"]) for r in rows]
-        return Reply("\n\n".join(_detail(store, r) for r in rows), shown=shown,
-                     photos=_photos(store, shown, numbered=False))
-    # No lo tiene: puede estar apuntado en la lista de deseos («¿cuándo sale el nuevo de…?»).
-    wished = _wish_matches(store, args)
-    if not wished:
+    kind, rows = _lookup(store, args)
+    if not rows:
         return Reply(NOT_FOUND.format(args.strip()))
-    shown = [(a, store.wishlist[a]["name"]) for a in wished]
-    return Reply("\n\n".join(_wish_detail(store, a) for a in wished), shown=shown,
+    shown = [(r["appid"], r["name"]) for r in rows]
+    return Reply("\n\n".join(_card(store, kind, r) for r in rows), shown=shown,
                  photos=_photos(store, shown, numbered=False))
-
-
-def _one_detail(store: Store, name: str, shown: list[tuple[str, str]]) -> tuple[str, str, str] | None:
-    """(appid, nombre, ficha) del juego que mejor casa, sea del backlog o de la lista de deseos."""
-    row = _resolve(store, name, shown)
-    if row is not None:
-        return row["appid"], row["name"], _detail(store, row)
-    wished = _wish_matches(store, name, n=1)
-    if wished:
-        return wished[0], store.wishlist[wished[0]]["name"], _wish_detail(store, wished[0])
-    return None
 
 
 def cmd_juegos(store: Store, names: list[str], shown: list[tuple[str, str]] = ()) -> Reply:
@@ -414,12 +420,14 @@ def cmd_juegos(store: Store, names: list[str], shown: list[tuple[str, str]] = ()
         return cmd_juego(store, names[0])
     parts, found, missing = [], [], []
     for name in names:
-        detail = _one_detail(store, name, list(shown))
-        if detail is None:
+        # Lo que se acaba de mostrar manda; si no, se busca igual que en /juego.
+        row = _near(store, name, list(shown))
+        kind, rows = ("backlog", [row]) if row is not None else _lookup(store, name, n=1)
+        if not rows:
             missing.append(name)
-        elif detail[0] not in {appid for appid, _ in found}:
-            found.append((detail[0], detail[1]))
-            parts.append(detail[2])
+        elif rows[0]["appid"] not in {appid for appid, _ in found}:
+            found.append((rows[0]["appid"], rows[0]["name"]))
+            parts.append(_card(store, kind, rows[0]))
     parts += [NOT_FOUND.format(m) for m in missing]
     return Reply("\n\n".join(parts), shown=found, photos=_photos(store, found, numbered=False))
 
@@ -554,13 +562,19 @@ def cmd_marcar(store: Store, args: str) -> Reply:
                  [(r["name"], f"mark:{r['appid']}:{estado}") for r in found] + [cancel])
 
 
-def _resolve(store: Store, name: str, shown: list[tuple[str, str]]) -> dict | None:
-    """Nombre que dio el LLM → fila del backlog, priorizando lo que se acaba de mostrar."""
+def _near(store: Store, name: str, shown: list[tuple[str, str]]) -> dict | None:
+    """Fila del backlog de un juego que el bot acaba de mostrar, si solo casa uno."""
     q = fold(name)
     by_id = {r["appid"]: r for r in store.backlog}
     near = [a for a, n in shown if fold(n) == q] or [a for a, n in shown if q in fold(n)]
-    if len(near) == 1 and near[0] in by_id:
-        return by_id[near[0]]
+    return by_id[near[0]] if len(near) == 1 and near[0] in by_id else None
+
+
+def _resolve(store: Store, name: str, shown: list[tuple[str, str]]) -> dict | None:
+    """Nombre que dio el LLM → fila del backlog, priorizando lo que se acaba de mostrar."""
+    row = _near(store, name, shown)
+    if row is not None:
+        return row
     found = _game_matches(store.backlog, name, n=1)
     return found[0] if found else None
 

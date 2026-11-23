@@ -544,6 +544,19 @@ Se aplica en orden y se para en el primer paso que encuentra algo:
    Holmes Chapter One» y «devils daughter» encuentra «The Devil's Daughter».
 4. Parecido del nombre completo (difflib ≥ 0,6).
 
+En el paso 4 no cuentan los artículos ni las preposiciones (`the`, `of`, `el`,
+`de`…): el «The» compartido hacía que «The Expanse» se pareciera a The Ascent,
+a The Cave y a The Spatials.
+
+Al pedir una ficha se busca en dos sitios, con dos reglas (`_lookup`): **lo
+exacto manda sobre lo difuso** (pasos 1-2 antes que 3-4) y **la biblioteca
+sobre la lista de deseos**. Es decir: biblioteca exacta → deseos exacta →
+biblioteca difusa → deseos difusa. Así «¿cuándo sale el nuevo de The Expanse?»
+llega a la lista de deseos aunque el paso 4 le vea un parecido con algo del
+backlog, y «football champions» (apuntado) no se convierte en el «Football,
+Tactics & Glory» que ya tiene. En el texto libre, antes de todo eso manda lo
+que el bot acaba de mostrar.
+
 ### 3.8 Repaso (`/repasar`)
 
 - **Qué entra.** Juegos en `pendiente` con 2 h o más jugadas. Primero los

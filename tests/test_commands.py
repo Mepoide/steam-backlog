@@ -7,7 +7,7 @@ import llm as real_llm
 from datetime import date
 
 from commands import (NO_DATA, Store, cmd_ayuda, cmd_buscar, cmd_coste, cmd_deseos, cmd_juego,
-                      cmd_limites, cmd_marcar,
+                      cmd_juegos, cmd_limites, cmd_marcar,
                       cmd_mostrados, cmd_parecidos, cmd_recientes, cmd_recomienda, cmd_repasar,
                       cmd_top, confirm_mark, confirm_marks, find_games, finish_review, free_text,
                       parse_marks, parse_recomienda_args, plan_marks, render, review_step,
@@ -724,7 +724,7 @@ def test_juego_falls_back_to_the_wishlist():
     reply = cmd_juego(wish_store(), "expanse")
     assert reply.text.splitlines() == [
         "The Expanse: Osiris Reborn — 💜 lista de deseos",
-        "💜 En tu lista de deseos desde el 2026-10-04",
+        "Apuntado el 2026-10-04",
         "Aún no ha salido (prevista para marzo de 2027)",
         "No lo tienes, así que no entra en el backlog ni en las recomendaciones.",
         "https://store.steampowered.com/app/100",
@@ -763,3 +763,26 @@ def test_wishlist_photos_come_from_the_wishlist_entry():
     s = wish_store()
     s.wishlist["100"]["images"] = {"header": "https://cdn/h.jpg"}
     assert cmd_juego(s, "expanse").photos == [("https://cdn/h.jpg", "The Expanse: Osiris Reborn")]
+
+
+def test_juego_prefers_an_exact_wishlist_match_over_a_fuzzy_library_one():
+    """«football champions» está apuntado; «Football, Tactics & Glory» solo se parece."""
+    s = store()
+    s.backlog = s.backlog + make_backlog(("20", "Football, Tactics & Glory", "pendiente"))
+    s.wishlist = {"21": wish("21", "Football Champions", coming=True, note="Próximamente")}
+    reply = cmd_juego(s, "football champions")
+    assert reply.text.startswith("Football Champions — 💜 lista de deseos")
+    # Y al revés: lo que sí tiene no lo pierde por culpa de la lista de deseos.
+    assert cmd_juego(s, "football tactics").text.startswith("Football, Tactics & Glory — ⏳")
+
+
+def test_juego_still_prefers_the_library_when_both_match_exactly():
+    s = wish_store()
+    assert cmd_juego(s, "Hades").text.startswith("Hades — ⏳ pendiente")
+
+
+def test_juegos_prefers_what_was_just_shown():
+    s = wish_store()
+    reply = cmd_juegos(s, ["Hades", "Nesis"], shown=[("6", "Hades II")])
+    assert reply.text.startswith("Hades II — ⏳ pendiente")
+    assert [n for _, n in reply.shown] == ["Hades II", "Nesis"]
